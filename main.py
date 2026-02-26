@@ -58,12 +58,12 @@ def scan_and_trade(exchange_api, ai_advisor, strategy):
 
             # b) Breakout Check (If NOT holding symbol)
             # Find the breakout target price
-            # Get daily OHLCV from yesterday
-            df_day = exchange_api.fetch_ohlcv(symbol, timeframe='day', limit=2)
-            if df_day is None or len(df_day) < 2:
+            # Get 15m OHLCV from the previous 15-minute candle
+            df_15m = exchange_api.fetch_ohlcv(symbol, timeframe='15m', limit=2)
+            if df_15m is None or len(df_15m) < 2:
                 continue
 
-            target_price = strategy.get_breakout_target(df_day)
+            target_price = strategy.get_breakout_target(df_15m)
             
             if target_price and current_price >= target_price:
                 logger.info(f"[{symbol}] Breakout Detected! Price {current_price:,} >= Target {target_price:,}")
@@ -132,7 +132,7 @@ def main():
         
         # 실제 계좌 원화 잔고 출력
         krw_real = get_current_real_balance(exchange_api, "KRW")
-        logger.info(f"💰 Current Upbit KRW Balance: {krw_real:,.0f} 원")
+        logger.info(f"💰 Current Coinone KRW Balance: {krw_real:,.0f} 원")
 
         scan_and_trade(exchange_api, ai_advisor, strategy)
         

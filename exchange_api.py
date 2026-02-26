@@ -59,7 +59,7 @@ class ExchangeAPI:
             
             # Map ccxt timeframe to Coinone interval string
             # Coinone supports: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 1d, 1w, 1M
-            interval_map = {'day': '1d', '1d': '1d', '1h': '1h', 'minute60': '1h'}
+            interval_map = {'day': '1d', '1d': '1d', '1h': '1h', 'minute60': '1h', '15m': '15m'}
             interval = interval_map.get(timeframe, '1d')
             
             import requests

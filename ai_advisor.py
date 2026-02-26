@@ -24,16 +24,16 @@ class AIAdvisor:
 
         prompt = f"""
 You are an expert cryptocurrency trading assistant.
-We are using the Volatility Breakout (VBD) strategy (Larry Williams) on Coinone. 
+We are using the Volatility Breakout (VBD) strategy on a 15-minute timeframe (Aggressive Scalping) on Coinone. 
 
 Context:
 - Ticker: {symbol}
 - Rank by 24h Volume on Coinone: Top {volume_rank}
 - Current Price: {current_price:,} KRW
-- VBD Target Breakout Price: {target_price:,} KRW (K={k_value})
+- 15m VBD Target Breakout Price: {target_price:,} KRW (K={k_value})
 - Current 60m RSI: {rsi:.2f}
 
-The price has just crossed the breakout target. This implies a strong upward momentum.
+The price has just crossed the 15-minute breakout target. This implies a sudden upward momentum block.
 However, we want you to act as a filter against finding a fake breakout (fakeout).
 Given that this coin is in the upper bounds of volume and momentum is building, do you authorize this BUY?
 
