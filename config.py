@@ -20,8 +20,8 @@ class Config:
             self.coin_count = 5
             
         # VBD specific settings
-        # K value for VBD: typically 0.5 for crypto
-        self.vbd_k = 0.5
+        # K value for VBD: lowered to 0.3 for aggressive 15m scalping
+        self.vbd_k = 0.3
         # Trailing stop: 3% off high
         self.trailing_stop_pct = 0.03
             
