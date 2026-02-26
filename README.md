@@ -75,10 +75,47 @@
     DRY_RUN=False # True로 변경 시 실제 매매 없이 모의 투자 로직만 돌아갑니다.
     ```
 
-4.  **엔진 구동:**
     ```bash
     python main.py
     ```
+
+---
+
+## ☁️ 오라클 클라우드(Oracle Cloud VPS) 24시간 무인 구동 가이드
+
+로컬 PC를 끄더라도 봇이 24시간 365일 돌아가게 하려면 클라우드(리눅스) 환경에 배포해야 합니다.
+
+**1. 서버 최초 세팅 (Ubuntu 24.04)**
+```bash
+# 필수 시스템 패키지 설치
+sudo apt update && sudo apt install python3-pip python3.12-venv git -y
+# 리포지토리 클론 및 이동
+git clone https://github.com/MING9UCCI/Coin_trader.git
+cd Coin_trader
+# 가상환경 구축 및 의존성 설치
+python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt
+# API 키 파일 생성 (내부 텍스트 복붙)
+nano .env
+```
+
+**2. 봇 백그라운드 무한 실행 (`nohup`)**
+```bash
+# PuTTY(SSH) 접속을 끊어도 봇이 죽지 않도록 백그라운드로 실행
+source venv/bin/activate && nohup python3 main.py &
+```
+
+**3. 깃허브 최신 코드 강제 업데이트 & 봇 재시작 콤보 (매우 중요)**
+로컬 PC에서 코드를 수정하여 `git push`를 하셨다면, 서버에 접속해서 아래 3줄을 순서대로 복붙하여 봇을 업데이트해야 합니다.
+```bash
+# 1. 현재 돌아가고 있는 기존 봇 강제 종료
+pkill -f main.py
+
+# 2. 깃허브에서 최신 코드 강제 다운로드(새로고침)
+cd Coin_trader && git pull origin main
+
+# 3. 새로운 코드로 다시 백그라운드 봇 실행!
+source venv/bin/activate && nohup python3 main.py &
+```
 
 ---
 *Created by [MING9UCCI](https://github.com/MING9UCCI)*
