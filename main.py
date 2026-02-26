@@ -27,17 +27,22 @@ def sync_positions(exchange_api, strategy):
         
         for symbol in top_coins:
             base_ticker = symbol.split('/')[0]
-            if base_ticker in balances:
-                free_amount = float(balances[base_ticker].get('free', 0.0))
-                if free_amount > 0:
-                    current_price = exchange_api.fetch_current_price(symbol)
-                    if current_price and (free_amount * current_price) > 5000:
-                        positions[symbol] = {
-                            'buy_price': current_price,
-                            'highest_price': current_price,
-                            'amount': free_amount
-                        }
-                        logger.info(f"Synced existing position: [{symbol}] (Amount: {free_amount}, Checkpoint Price: {current_price:,})")
+            # Safely get the free amount for the ticker
+            free_amount = float(balances.get('free', {}).get(base_ticker, 0.0))
+            if free_amount <= 0:
+                # Fallback to total if free isn't specified but total is
+                free_amount = float(balances.get('total', {}).get(base_ticker, 0.0))
+                
+            if free_amount > 0:
+                current_price = exchange_api.fetch_current_price(symbol)
+                if current_price and (free_amount * current_price) > 5000:
+                    positions[symbol] = {
+                        'buy_price': current_price,
+                        'highest_price': current_price,
+                        'amount': free_amount
+                    }
+                    logger.info(f"Synced existing position: [{symbol}] (Amount: {free_amount:.4f}, Checkpoint Price: {current_price:,})")
+
     except Exception as e:
         logger.error(f"Failed to sync positions: {e}")
 
