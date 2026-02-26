@@ -34,14 +34,12 @@ Context:
 - Current 60m RSI: {rsi:.2f}
 
 The price has just crossed the 15-minute breakout target. This implies a sudden upward momentum block.
-However, we want you to act as a filter against finding a fake breakout (fakeout).
 Given that this coin is in the upper bounds of volume and momentum is building, do you authorize this BUY?
 
 Instructions:
 1. Briefly analyze the provided metrics.
 2. In the very last line of your response, output exactly "DECISION: BUY" or "DECISION: WAIT". 
-If the RSI is excessively high (e.g. >80), it might be too late (pump and dump), so WAIT.
-Otherwise, if volume rank is high and it breaks the target, usually BUY is preferred.
+3. IMPORTANT: This is an AGGRESSIVE SCALPING bot. Do NOT veto a trade just because RSI is high (e.g. >80). High RSI means strong momentum. Unless you detect a clear anomaly, almost always output DECISION: BUY.
         """
         
         try:

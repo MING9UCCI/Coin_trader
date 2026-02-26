@@ -79,33 +79,31 @@ def scan_and_trade(exchange_api, ai_advisor, strategy):
                     
                     # Check Balance and Execute
                     krw_avail = get_current_real_balance(exchange_api, "KRW")
-                    if krw_avail is None:
-                        krw_avail = 0
+                    if krw_avail is None: krw_avail = 0
                         
-                    # 내 전체 보유 자산(원화) 중에서 아직 투자 안 한 남은 슬롯만큼 나눠서 진입
-                    # 예: 내가 10만원 있고 5코인 분산투자면 2만원어치. 
-                    # 만약 3만원 남았고 현재 1종목 이미 갖고 있으면, 빈 4자리용 -> 한 번에 최소 5000원~ 최대 '남은돈/빈슬롯'
                     remaining_slots = config.coin_count - len(positions)
-                    if remaining_slots <= 0:
-                         logger.info(f"[{symbol}] Maximum coin count reached. Can't buy more.")
-                         allocate_amount = 0
-                    else:
-                        allocate_amount = krw_avail / remaining_slots
                     
-                    # 업비트 최소주문금액(5,000원) 체크
-                    if allocate_amount >= 5050 and len(positions) < config.coin_count:
-                        logger.info(f"[{symbol}] Attemping to BUY with Dynamic Allocation: {allocate_amount:,.0f} KRW")
-                        order = exchange_api.place_market_buy_order(symbol, allocate_amount)
+                    if remaining_slots > 0:
+                        allocate_amount = krw_avail / remaining_slots
                         
-                        if order:
-                            bought_amount = (allocate_amount * 0.9995) / current_price if config.dry_run else allocate_amount / current_price 
+                        # 업비트/코인원 최소주문금액(5,000원) 체크
+                        if allocate_amount >= 5050:
+                            logger.info(f"[{symbol}] Attemping to BUY with Dynamic Allocation: {allocate_amount:,.0f} KRW")
+                            order = exchange_api.place_market_buy_order(symbol, allocate_amount)
                             
-                            positions[symbol] = {
-                                'buy_price': current_price,
-                                'highest_price': current_price,
-                                'amount': bought_amount
-                            }
-                            logger.info(f"[{symbol}] Position Opened successfully.")
+                            if order:
+                                bought_amount = (allocate_amount * 0.9995) / current_price if config.dry_run else allocate_amount / current_price 
+                                
+                                positions[symbol] = {
+                                    'buy_price': current_price,
+                                    'highest_price': current_price,
+                                    'amount': bought_amount
+                                }
+                                logger.info(f"[{symbol}] Position Opened successfully.")
+                        else:
+                            logger.info(f"[{symbol}] Skipped: Allocated amount ({allocate_amount:,.0f} KRW) is under minimum order limit of 5000 KRW.")
+                    else:
+                        logger.info(f"[{symbol}] Maximum coin count reached. Can't buy more.")
                 else:
                     logger.info(f"[{symbol}] AI VETOED Trade: {context[-50:]}")
 
