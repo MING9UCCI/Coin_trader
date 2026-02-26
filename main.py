@@ -66,9 +66,29 @@ def scan_and_trade(exchange_api, ai_advisor, strategy):
             target_price = strategy.get_breakout_target(df_15m)
             
             if target_price and current_price >= target_price:
+                # 1단계: 돈이 충분한지 (최소 5,500원) 미리 검사해서 AI 호출 낭비 방지
+                krw_avail = get_current_real_balance(exchange_api, "KRW")
+                if krw_avail is None: krw_avail = 0
+                
+                remaining_slots = config.coin_count - len(positions)
+                if remaining_slots <= 0:
+                    logger.info(f"[{symbol}] Maximum coin count reached. Can't buy more.")
+                    continue
+                    
+                allocate_amount = krw_avail / remaining_slots
+                
+                # 강제로 최소 주문 금액(5,500원) 이상으로 보정 (수수료 포함 안전빵)
+                if allocate_amount < 5500:
+                    if krw_avail >= 5500:
+                        allocate_amount = krw_avail  # 남은 돈 몰빵
+                        logger.info(f"[{symbol}] Budget per slot too low. Adjusting allocation to available KRW: {allocate_amount:,.0f}")
+                    else:
+                        logger.info(f"[{symbol}] Skipped: Total KRW ({krw_avail:,.0f}) is under absolute minimum 5,500 KRW. Cannot proceed.")
+                        continue
+                
                 logger.info(f"[{symbol}] Breakout Detected! Price {current_price:,} >= Target {target_price:,}")
                 
-                # Filter via AI
+                # 2단계: 돈이 확인되었으므로 AI 필터링 시작
                 rsi = strategy.get_rsi(symbol)
                 rank_index = top_coins.index(symbol) + 1
                 
@@ -77,33 +97,18 @@ def scan_and_trade(exchange_api, ai_advisor, strategy):
                 if approved:
                     logger.info(f"[{symbol}] AI Appoved: {context[-50:]}")
                     
-                    # Check Balance and Execute
-                    krw_avail = get_current_real_balance(exchange_api, "KRW")
-                    if krw_avail is None: krw_avail = 0
-                        
-                    remaining_slots = config.coin_count - len(positions)
+                    logger.info(f"[{symbol}] Attemping to BUY with Dynamic Allocation: {allocate_amount:,.0f} KRW")
+                    order = exchange_api.place_market_buy_order(symbol, allocate_amount)
                     
-                    if remaining_slots > 0:
-                        allocate_amount = krw_avail / remaining_slots
+                    if order:
+                        bought_amount = (allocate_amount * 0.9995) / current_price if config.dry_run else allocate_amount / current_price 
                         
-                        # 업비트/코인원 최소주문금액(5,000원) 체크
-                        if allocate_amount >= 5050:
-                            logger.info(f"[{symbol}] Attemping to BUY with Dynamic Allocation: {allocate_amount:,.0f} KRW")
-                            order = exchange_api.place_market_buy_order(symbol, allocate_amount)
-                            
-                            if order:
-                                bought_amount = (allocate_amount * 0.9995) / current_price if config.dry_run else allocate_amount / current_price 
-                                
-                                positions[symbol] = {
-                                    'buy_price': current_price,
-                                    'highest_price': current_price,
-                                    'amount': bought_amount
-                                }
-                                logger.info(f"[{symbol}] Position Opened successfully.")
-                        else:
-                            logger.info(f"[{symbol}] Skipped: Allocated amount ({allocate_amount:,.0f} KRW) is under minimum order limit of 5000 KRW.")
-                    else:
-                        logger.info(f"[{symbol}] Maximum coin count reached. Can't buy more.")
+                        positions[symbol] = {
+                            'buy_price': current_price,
+                            'highest_price': current_price,
+                            'amount': bought_amount
+                        }
+                        logger.info(f"[{symbol}] Position Opened successfully.")
                 else:
                     logger.info(f"[{symbol}] AI VETOED Trade: {context[-50:]}")
 
