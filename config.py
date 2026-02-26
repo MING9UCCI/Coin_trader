@@ -14,16 +14,10 @@ class Config:
         self.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
         
         try:
-            # We no longer trade 1 symbol. We distribute budget.
-            # E.g. 100000 total -> per coin 20000 limit
-            self.total_budget = float(os.getenv("TOTAL_BUDGET", "100000"))
             self.coin_count = int(os.getenv("COIN_COUNT", "5"))
-            self.trade_amount = self.total_budget / self.coin_count
         except ValueError:
-            logging.error("Invalid BUDGET settings in .env. Defaulting to 100,000 / 5 coins")
-            self.total_budget = 100000
+            logging.error("Invalid COIN_COUNT settings in .env. Defaulting to 5 coins")
             self.coin_count = 5
-            self.trade_amount = 20000
             
         # VBD specific settings
         # K value for VBD: typically 0.5 for crypto
