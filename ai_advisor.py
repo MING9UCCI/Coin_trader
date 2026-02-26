@@ -24,11 +24,11 @@ class AIAdvisor:
 
         prompt = f"""
 You are an expert cryptocurrency trading assistant.
-We are using the Volatility Breakout (VBD) strategy (Larry Williams) on Upbit. 
+We are using the Volatility Breakout (VBD) strategy (Larry Williams) on Coinone. 
 
 Context:
 - Ticker: {symbol}
-- Rank by 24h Volume on Upbit: Top {volume_rank}
+- Rank by 24h Volume on Coinone: Top {volume_rank}
 - Current Price: {current_price:,} KRW
 - VBD Target Breakout Price: {target_price:,} KRW (K={k_value})
 - Current 60m RSI: {rsi:.2f}
