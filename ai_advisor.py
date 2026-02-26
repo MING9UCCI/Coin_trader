@@ -1,4 +1,5 @@
 import google.generativeai as genai
+import time
 from config import config
 from logger import logger
 
@@ -6,8 +7,9 @@ class AIAdvisor:
     def __init__(self):
         if config.gemini_api_key:
             genai.configure(api_key=config.gemini_api_key)
-            # Use gemini-2.5-flash as it is extremely fast and capable
-            self.model = genai.GenerativeModel('gemini-2.5-flash')
+            # Use gemini-1.5-flash to take advantage of 15RPM / 1M TPM free tier limits.
+            # 2.5-flash has stricter limits that could be triggered during rapid scalping.
+            self.model = genai.GenerativeModel('gemini-1.5-flash')
             self.active = True
             logger.info("AI Advisor (Gemini) initialized.")
         else:
@@ -43,7 +45,8 @@ Instructions:
         """
         
         try:
-            logger.info(f"Asking Gemini AI for approval on {symbol}...")
+            logger.info(f"Asking Gemini AI for approval on {symbol}... (Adding 2s delay to prevent API Rate Limit)")
+            time.sleep(2)  # Artificial delay to cool down API requests
             response = self.model.generate_content(prompt)
             text = response.text.strip().upper()
             
