@@ -1,11 +1,15 @@
 import time
 import schedule
 import pyupbit
+from rich.console import Console
+from rich.panel import Panel
 from config import config
 from logger import logger
 from exchange_api import ExchangeAPI
 from ai_advisor import AIAdvisor
 from strategy_vbd import StrategyVBD
+
+console = Console()
 
 # Dictionary to hold the state of positions
 # positions = { 'KRW-BTC': {'buy_price': 50000, 'highest_price': 55000, 'amount': 0.01} }
@@ -99,7 +103,14 @@ def scan_and_trade(exchange_api, ai_advisor, strategy):
     logger.info("--- Scan Cycle Complete ---")
 
 def main():
-    logger.info(f"Starting AI Fusion Trading Bot (Dry Run: {config.dry_run})")
+    welcome_msg = f"[bold cyan]AI Fusion Trading Bot V2[/bold cyan]\n" \
+                  f"Target: [yellow]Top {config.coin_count} Volume Coins[/yellow]\n" \
+                  f"Budget: [green]{config.total_budget:,} KRW[/green]\n" \
+                  f"Dry Run Mode: [red]{config.dry_run}[/red]"
+    
+    console.print(Panel(welcome_msg, title="[bold magenta]Initialization[/bold magenta]", expand=False))
+    
+    logger.info("Starting up engine and connecting to APIs...")
     
     try:
         exchange_api = ExchangeAPI()
