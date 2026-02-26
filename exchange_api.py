@@ -1,71 +1,77 @@
-import ccxt
+import pyupbit
 import pandas as pd
 from config import config
 from logger import logger
 
 class ExchangeAPI:
     def __init__(self):
-        self.exchange_id = config.exchange_id
-        
-        try:
-            exchange_class = getattr(ccxt, self.exchange_id)
-            self.exchange = exchange_class({
-                'apiKey': config.api_key,
-                'secret': config.secret_key,
-                'enableRateLimit': True,
-                'options': {'defaultType': 'spot'}  # Use spot trading by default
-            })
-            logger.info(f"Initialized {self.exchange_id} exchange connection.")
-        except AttributeError:
-            logger.error(f"Exchange {self.exchange_id} is not supported by CCXT.")
-            raise
+        self.upbit = None
+        if config.access_key and config.secret_key:
+            self.upbit = pyupbit.Upbit(config.access_key, config.secret_key)
+            logger.info("Initialized Upbit API connection.")
+        else:
+            logger.warning("Upbit keys not found. Operating in public-only mode or Dry-Run without actual balance tracking.")
 
-    def fetch_ohlcv(self, symbol, timeframe='1h', limit=100):
-        """Fetches historical candlestick data and converts it to a pandas DataFrame."""
+    def fetch_ohlcv(self, symbol, timeframe='minute60', limit=100):
+        """Fetches historical candlestick data from Upbit."""
         try:
             logger.info(f"Fetching OHLCV data for {symbol} ({timeframe})")
-            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
+            # pyupbit returns a pandas DataFrame directly
+            df = pyupbit.get_ohlcv(symbol, interval=timeframe, count=limit)
             return df
         except Exception as e:
             logger.error(f"Error fetching OHLCV data: {e}")
             return None
 
-    def fetch_balance(self, asset='USDT'):
-        """Fetches the available balance for a specific asset."""
+    def fetch_current_price(self, symbol):
+        """Fetch real-time current price."""
+        return pyupbit.get_current_price(symbol)
+
+    def fetch_balance(self, ticker='KRW'):
+        """Fetches the available balance for a specific asset (e.g., 'KRW' or 'KRW-BTC')."""
+        if not self.upbit:
+            return 0.0
+            
         try:
-            balance = self.exchange.fetch_balance()
-            free_balance = balance.get(asset, {}).get('free', 0.0)
-            logger.info(f"Available balance for {asset}: {free_balance}")
-            return free_balance
+            balance = self.upbit.get_balance(ticker)
+            logger.info(f"Available balance for {ticker}: {balance}")
+            return balance
         except Exception as e:
             logger.error(f"Error fetching balance: {e}")
             return 0.0
 
-    def place_market_buy_order(self, symbol, amount):
-        """Places a market buy order."""
+    def place_market_buy_order(self, symbol, krw_amount):
+        """Places a market buy order for a specific KRW amount on Upbit."""
         if config.dry_run:
-            logger.info(f"[DRY RUN] Would place MARKET BUY order for {amount} of {symbol}")
+            logger.info(f"[DRY RUN] Would place MARKET BUY order for {krw_amount} KRW of {symbol}")
             return {'status': 'simulated_buy'}
+            
+        if not self.upbit:
+            logger.error("API keys missing, cannot place real order.")
+            return None
+            
         try:
-            logger.info(f"Placing MARKET BUY order for {amount} of {symbol}")
-            order = self.exchange.create_market_buy_order(symbol, amount)
+            logger.info(f"Placing MARKET BUY order for {krw_amount} KRW of {symbol}")
+            order = self.upbit.buy_market_order(symbol, krw_amount)
             logger.info(f"BUY Order placed successfully: {order}")
             return order
         except Exception as e:
             logger.error(f"Error placing buy order: {e}")
             return None
 
-    def place_market_sell_order(self, symbol, amount):
-        """Places a market sell order."""
+    def place_market_sell_order(self, symbol, coin_volume):
+        """Places a market sell order for a certain volume of coin on Upbit."""
         if config.dry_run:
-            logger.info(f"[DRY RUN] Would place MARKET SELL order for {amount} of {symbol}")
+            logger.info(f"[DRY RUN] Would place MARKET SELL order for {coin_volume} of {symbol}")
             return {'status': 'simulated_sell'}
+            
+        if not self.upbit:
+            logger.error("API keys missing, cannot place real order.")
+            return None
+            
         try:
-            logger.info(f"Placing MARKET SELL order for {amount} of {symbol}")
-            order = self.exchange.create_market_sell_order(symbol, amount)
+            logger.info(f"Placing MARKET SELL order for {coin_volume} of {symbol}")
+            order = self.upbit.sell_market_order(symbol, coin_volume)
             logger.info(f"SELL Order placed successfully: {order}")
             return order
         except Exception as e:

@@ -7,22 +7,21 @@ load_dotenv()
 
 class Config:
     def __init__(self):
-        self.exchange_id = os.getenv("EXCHANGE_ID", "binance").lower()
-        self.api_key = os.getenv("API_KEY", "")
-        self.secret_key = os.getenv("SECRET_KEY", "")
-        self.symbol = os.getenv("SYMBOL", "BTC/USDT")
+        self.access_key = os.getenv("UPBIT_ACCESS_KEY", "")
+        self.secret_key = os.getenv("UPBIT_SECRET_KEY", "")
+        self.symbol = os.getenv("SYMBOL", "KRW-BTC")
         
         try:
-            self.trade_amount = float(os.getenv("TRADE_AMOUNT", "0.01"))
+            self.trade_amount = float(os.getenv("TRADE_AMOUNT", "10000"))
         except ValueError:
-            logging.error("Invalid TRADE_AMOUNT in .env. Defaulting to 0.01")
-            self.trade_amount = 0.01
+            logging.error("Invalid TRADE_AMOUNT in .env. Defaulting to 10000")
+            self.trade_amount = 10000
             
         self.dry_run = os.getenv("DRY_RUN", "True").lower() in ("true", "1", "t")
 
     def validate(self):
         """Check if essential API keys are provided when not in dry run."""
-        if not self.dry_run and (not self.api_key or not self.secret_key):
-            raise ValueError("API_KEY and SECRET_KEY must be set in .env when DRY_RUN is False.")
+        if not self.dry_run and (not self.access_key or not self.secret_key):
+            raise ValueError("UPBIT_ACCESS_KEY and UPBIT_SECRET_KEY must be set in .env when DRY_RUN is False.")
 
 config = Config()
