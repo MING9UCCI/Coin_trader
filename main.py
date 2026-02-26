@@ -18,6 +18,29 @@ positions = {}
 def get_current_real_balance(exchange_api, ticker="KRW"):
     return exchange_api.fetch_balance(ticker)
 
+def sync_positions(exchange_api, strategy):
+    logger.info("Syncing existing portfolio balances into bot memory...")
+    try:
+        # ccxt fetch_balance returns all balances mapped
+        balances = exchange_api.exchange.fetch_balance()
+        top_coins = strategy.get_top_volume_coins(limit=config.coin_count)
+        
+        for symbol in top_coins:
+            base_ticker = symbol.split('/')[0]
+            if base_ticker in balances:
+                free_amount = float(balances[base_ticker].get('free', 0.0))
+                if free_amount > 0:
+                    current_price = exchange_api.fetch_current_price(symbol)
+                    if current_price and (free_amount * current_price) > 5000:
+                        positions[symbol] = {
+                            'buy_price': current_price,
+                            'highest_price': current_price,
+                            'amount': free_amount
+                        }
+                        logger.info(f"Synced existing position: [{symbol}] (Amount: {free_amount}, Checkpoint Price: {current_price:,})")
+    except Exception as e:
+        logger.error(f"Failed to sync positions: {e}")
+
 def scan_and_trade(exchange_api, ai_advisor, strategy):
     logger.info("--- Starting VBD + AI Scan Cycle ---")
     
@@ -136,6 +159,8 @@ def main():
         # 실제 계좌 원화 잔고 출력
         krw_real = get_current_real_balance(exchange_api, "KRW")
         logger.info(f"💰 Current Coinone KRW Balance: {krw_real:,.0f} 원")
+
+        sync_positions(exchange_api, strategy)
 
         scan_and_trade(exchange_api, ai_advisor, strategy)
         
