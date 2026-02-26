@@ -108,7 +108,9 @@ def scan_and_trade(exchange_api, ai_advisor, strategy):
                 # 강제로 최소 주문 금액(5,500원) 이상으로 보정 (수수료 포함 안전빵)
                 if allocate_amount < 5500:
                     if krw_avail >= 5500:
-                        allocate_amount = krw_avail  # 남은 돈 몰빵
+                        allocate_amount = int(krw_avail) - 1  # 1원 빼고 몰빵 (잔액 부족 에러 방지)
+                        if allocate_amount < 5500: 
+                            allocate_amount = 5500 # 혹시나 5500원 딱코면 다시 복구
                         logger.info(f"[{symbol}] Budget per slot too low. Adjusting allocation to available KRW: {allocate_amount:,.0f}")
                     else:
                         logger.info(f"[{symbol}] Skipped: Total KRW ({krw_avail:,.0f}) is under absolute minimum 5,500 KRW. Cannot proceed.")
