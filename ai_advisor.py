@@ -57,6 +57,11 @@ Instructions:
                 return False, response.text
                 
         except Exception as e:
-            logger.error(f"Gemini API Error: {e}")
-            # Failsafe: If AI API fails, skip the trade to be safe
-            return False, f"Error: {e}"
+            err_str = str(e)
+            if "429" in err_str or "quota" in err_str.lower():
+                logger.error("Gemini API Quota Exceeded (429). Waiting for reset (Free Tier limitation).")
+                return False, "Rate Limit Exceeded. Auto-veto to protect quota."
+            else:
+                short_err = err_str.splitlines()[0] if err_str else "Unknown Error"
+                logger.error(f"Gemini API Error: {short_err}")
+                return False, f"API Error: {short_err}"

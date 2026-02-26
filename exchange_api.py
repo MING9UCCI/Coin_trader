@@ -86,57 +86,106 @@ class ExchangeAPI:
             logger.error(f"Error fetching OHLCV for {symbol}: {e}")
             return None
 
+    def _wait_and_fill_limit_order(self, symbol: str, side: str, krw_budget=None, coin_budget=None, max_retries=5):
+        """
+        Auto-chasing limit order to spoof a market fill.
+        Since Coinone prohibits true market orders, limit orders placed at `current_price`
+        can easily hang if the market price spikes instantly.
+        This loops up to `max_retries`, waiting 5 seconds. If unfilled, it cancels and tries again
+        at the new price.
+        """
+        base, quote = symbol.split('/')
+        remaining_krw = krw_budget
+        remaining_coin = coin_budget
+        
+        for attempt in range(max_retries):
+            current_price = self.fetch_current_price(symbol)
+            if not current_price: continue
+
+            # Determine order dimensions
+            if side == 'BUY':
+                if remaining_krw <= 0: break
+                amount = remaining_krw / current_price
+            else:
+                if remaining_coin <= 0: break
+                amount = remaining_coin
+                
+            qty_formatted = float(f"{amount:.4f}")
+            if qty_formatted <= 0: break
+
+            request_params = {
+                'currency': base,
+                'price': float(current_price),
+                'qty': qty_formatted
+            }
+            
+            try:
+                # Place the spoofed market (limit) order
+                if side == 'BUY':
+                    res = self.exchange.v2PrivatePostOrderLimitBuy(request_params)
+                else:
+                    res = self.exchange.v2PrivatePostOrderLimitSell(request_params)
+                
+                if res.get('errorCode') != '0':
+                    logger.error(f"[{symbol}] API Error placing order on attempt {attempt+1}: {res}")
+                    return None
+                    
+                order_id = res.get('orderId')
+                logger.info(f"[{symbol}] Attempt {attempt+1}/{max_retries} - Placed Limited {side} at {current_price:,} (ID: {order_id})")
+                
+                # Wait for execution
+                time.sleep(5)
+                
+                # Check execution status
+                query_params = {
+                    'currency': base,
+                    'order_id': order_id
+                }
+                status_res = self.exchange.v2PrivatePostOrderQueryOrder(query_params)
+                
+                if status_res.get('errorCode') == '0':
+                    order_info = status_res.get('info', {})
+                    # If status is "live", it hasn't completely filled.
+                    if order_info.get('status') == 'live':
+                        logger.warning(f"[{symbol}] Order {order_id} hanging due to slippage. Canceling and retrying...")
+                        # Partially filled amount (we subtract this from our remaining budget)
+                        filled_qty = float(order_info.get('qty', 0)) - float(order_info.get('remainQty', 0))
+                        if side == 'BUY':
+                            remaining_krw -= (filled_qty * float(current_price))
+                        else:
+                            remaining_coin -= filled_qty
+                            
+                        # Cancel the hanging remainder
+                        self.exchange.v2PrivatePostOrderCancel({
+                            'currency': base,
+                            'order_id': order_id,
+                            'price': float(current_price),
+                            'qty': float(order_info.get('remainQty')),
+                            'is_ask': 1 if side == 'SELL' else 0
+                        })
+                        time.sleep(1) # Wait for cancel to process
+                    else:
+                        # Fully filled ("completed" or other)
+                        return {"result": "success", "orderId": order_id, "filled_price": current_price}
+                
+            except Exception as e:
+                logger.error(f"[{symbol}] Exception in order chase loop: {e}")
+                
+        logger.error(f"[{symbol}] Failed to fully fill {side} order after {max_retries} attempts.")
+        return None
+
     def place_market_buy_order(self, symbol, cost_krw):
-        """Places a market buy order using a specific KRW amount by mimicking it with a limit order."""
+        """Places a market buy order using a specific KRW amount by mimicking it with an auto-chasing limit order."""
         if config.dry_run:
             logger.info(f"[DRY RUN] Simulated Market Buy for {symbol} with {cost_krw} KRW")
             return {"uuid": f"dry-run-buy-{time.time()}"}
 
-        try:
-            current_price = self.fetch_current_price(symbol)
-            if not current_price: return None
-            
-            # Calculate how much coin we can buy with the KRW budget
-            amount = cost_krw / current_price
-            
-            base, quote = symbol.split('/')
-            
-            # Use stable V2 API instead of V2.1 to bypass undocumented Error 107
-            request_params = {
-                'currency': base,
-                'price': float(current_price),
-                'qty': float(f"{amount:.4f}")
-            }
-            
-            res = self.exchange.v2PrivatePostOrderLimitBuy(request_params)
-            logger.info(f"Market(Limit) BUY Order placed via V2 for {symbol}: {res}")
-            return res
-        except Exception as e:
-            logger.error(f"Error placing buy order for {symbol}: {e}")
-            return None
+        return self._wait_and_fill_limit_order(symbol, 'BUY', krw_budget=cost_krw)
 
     def place_market_sell_order(self, symbol, amount):
-        """Places a market sell order for a specific amount of coins."""
+        """Places a market sell order for a specific amount of coins by mimicking it with an auto-chasing limit order."""
         if config.dry_run:
             logger.info(f"[DRY RUN] Simulated Market Sell for {symbol} of amount {amount}")
             return {"uuid": f"dry-run-sell-{time.time()}"}
 
-        try:
-            current_price = self.fetch_current_price(symbol)
-            if not current_price: return None
-            
-            base, quote = symbol.split('/')
-            
-            # Use stable V2 API instead of V2.1 to bypass undocumented Error 107
-            request_params = {
-                'currency': base,
-                'price': float(current_price),
-                'qty': float(f"{amount:.4f}")
-            }
-            
-            res = self.exchange.v2PrivatePostOrderLimitSell(request_params)
-            logger.info(f"Market(Limit) SELL Order placed via V2 for {symbol}: {res}")
-            return res
-        except Exception as e:
-            logger.error(f"Error placing sell order for {symbol}: {e}")
-            return None
+        return self._wait_and_fill_limit_order(symbol, 'SELL', coin_budget=amount)
