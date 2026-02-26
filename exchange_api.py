@@ -87,23 +87,30 @@ class ExchangeAPI:
             return None
 
     def place_market_buy_order(self, symbol, cost_krw):
-        """Places a market buy order using a specific KRW amount."""
+        """Places a market buy order using a specific KRW amount by mimicking it with a limit order."""
         if config.dry_run:
             logger.info(f"[DRY RUN] Simulated Market Buy for {symbol} with {cost_krw} KRW")
             return {"uuid": f"dry-run-buy-{time.time()}"}
 
         try:
-            # Coinone CCXT only supports Limit Orders, so we mimic a market order 
-            # by placing a limit order at the exact current price.
             current_price = self.fetch_current_price(symbol)
             if not current_price: return None
             
+            # Calculate how much coin we can buy with the KRW budget
             amount = cost_krw / current_price
             
-            # Place order
-            order = self.exchange.create_limit_buy_order(symbol, amount, current_price)
-            logger.info(f"Market(Limit) BUY Order placed for {symbol}: {order}")
-            return order
+            base, quote = symbol.split('/')
+            
+            # Use stable V2 API instead of V2.1 to bypass undocumented Error 107
+            request_params = {
+                'currency': base,
+                'price': float(current_price),
+                'qty': float(f"{amount:.4f}")
+            }
+            
+            res = self.exchange.v2PrivatePostOrderLimitBuy(request_params)
+            logger.info(f"Market(Limit) BUY Order placed via V2 for {symbol}: {res}")
+            return res
         except Exception as e:
             logger.error(f"Error placing buy order for {symbol}: {e}")
             return None
@@ -115,13 +122,21 @@ class ExchangeAPI:
             return {"uuid": f"dry-run-sell-{time.time()}"}
 
         try:
-            # Mimic market sell via limit order at current price
             current_price = self.fetch_current_price(symbol)
             if not current_price: return None
             
-            order = self.exchange.create_limit_sell_order(symbol, amount, current_price)
-            logger.info(f"Market(Limit) SELL Order placed for {symbol}: {order}")
-            return order
+            base, quote = symbol.split('/')
+            
+            # Use stable V2 API instead of V2.1 to bypass undocumented Error 107
+            request_params = {
+                'currency': base,
+                'price': float(current_price),
+                'qty': float(f"{amount:.4f}")
+            }
+            
+            res = self.exchange.v2PrivatePostOrderLimitSell(request_params)
+            logger.info(f"Market(Limit) SELL Order placed via V2 for {symbol}: {res}")
+            return res
         except Exception as e:
             logger.error(f"Error placing sell order for {symbol}: {e}")
             return None
