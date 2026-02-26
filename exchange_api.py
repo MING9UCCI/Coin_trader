@@ -48,14 +48,39 @@ class ExchangeAPI:
     def fetch_ohlcv(self, symbol, timeframe='1d', limit=2):
         """
         Fetches OHLCV data. 
-        CCXT uses timeframes like '1m', '1h', '1d'.
+        Coinone CCXT fetch_ohlcv() is not supported yet, so we use their native Public REST API.
         Returns a Pandas DataFrame.
         """
         try:
-            # ccxt fetch_ohlcv returns list of [timestamp, open, high, low, close, volume]
-            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            # symbol format: 'BTC/KRW'
+            if '/' not in symbol:
+                return None
+            base, quote = symbol.split('/')
+            
+            # Map ccxt timeframe to Coinone interval string
+            # Coinone supports: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 1d, 1w, 1M
+            interval_map = {'day': '1d', '1d': '1d', '1h': '1h', 'minute60': '1h'}
+            interval = interval_map.get(timeframe, '1d')
+            
+            import requests
+            url = f"https://api.coinone.co.kr/public/v2/chart/{quote}/{base}?interval={interval}"
+            response = requests.get(url)
+            data = response.json()
+            
+            if data.get('result') != 'success':
+                logger.error(f"Coinone API Error fetching OHLCV: {data.get('error_msg')}")
+                return None
+                
+            chart_data = data['chart'][-limit:]
+            
+            df = pd.DataFrame(chart_data)
+            # Coinone returns string numbers, so we convert them
+            for col in ['open', 'high', 'low', 'close', 'target_volume']:
+                df[col] = df[col].astype(float)
+                
+            df.rename(columns={'target_volume': 'volume'}, inplace=True)
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            
             return df
         except Exception as e:
             logger.error(f"Error fetching OHLCV for {symbol}: {e}")

@@ -31,15 +31,24 @@ class StrategyVBD:
         return target_price
 
     def get_rsi(self, symbol, timeframe='1h'):
-        """Get current 1-hour RSI to pass to AI context via CCXT"""
+        """Get current 1-hour RSI to pass to AI context (Coinone REST API)"""
         try:
-            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=20)
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            if '/' not in symbol: return 50.0
+            base, quote = symbol.split('/')
             
-            if not df.empty:
-               rsi = ta.rsi(df['close'], length=14)
-               return rsi.iloc[-1]
-               
+            import requests
+            url = f"https://api.coinone.co.kr/public/v2/chart/{quote}/{base}?interval={timeframe}"
+            response = requests.get(url)
+            data = response.json()
+            
+            if data.get('result') == 'success':
+                chart_data = data['chart'][-20:]
+                df = pd.DataFrame(chart_data)
+                df['close'] = df['close'].astype(float)
+                
+                if not df.empty and len(df) >= 14:
+                    rsi = ta.rsi(df['close'], length=14)
+                    return rsi.iloc[-1]
             return 50.0 # fallback
         except Exception as e:
             logger.error(f"Error calculating RSI for {symbol}: {e}")
