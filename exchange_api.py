@@ -93,18 +93,16 @@ class ExchangeAPI:
             return {"uuid": f"dry-run-buy-{time.time()}"}
 
         try:
-            # Note: Coinone might not support standard market buy by cost natively through CCXT in all cases
-            # However, ccxt standardizes "createMarketBuyOrderWithCost" if the exchange supports it, 
-            # OR we specify the 'cost' parameter to the standard create_market_buy_order.
-            # But the most foolproof standard CCXT way if quote amount isn't supported is calculate amount:
+            # Coinone CCXT only supports Limit Orders, so we mimic a market order 
+            # by placing a limit order at the exact current price.
             current_price = self.fetch_current_price(symbol)
             if not current_price: return None
             
             amount = cost_krw / current_price
             
             # Place order
-            order = self.exchange.create_market_buy_order(symbol, amount)
-            logger.info(f"Market BUY Order placed for {symbol}: {order}")
+            order = self.exchange.create_limit_buy_order(symbol, amount, current_price)
+            logger.info(f"Market(Limit) BUY Order placed for {symbol}: {order}")
             return order
         except Exception as e:
             logger.error(f"Error placing buy order for {symbol}: {e}")
@@ -117,8 +115,12 @@ class ExchangeAPI:
             return {"uuid": f"dry-run-sell-{time.time()}"}
 
         try:
-            order = self.exchange.create_market_sell_order(symbol, amount)
-            logger.info(f"Market SELL Order placed for {symbol}: {order}")
+            # Mimic market sell via limit order at current price
+            current_price = self.fetch_current_price(symbol)
+            if not current_price: return None
+            
+            order = self.exchange.create_limit_sell_order(symbol, amount, current_price)
+            logger.info(f"Market(Limit) SELL Order placed for {symbol}: {order}")
             return order
         except Exception as e:
             logger.error(f"Error placing sell order for {symbol}: {e}")
