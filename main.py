@@ -46,7 +46,8 @@ def scan_and_trade(exchange_api, ai_advisor, strategy):
                     logger.info(f"[{symbol}] Trailing Stop Triggered! Selling at {current_price:,} KRW (Buy: {buy_price:,}). PNL: {profit_pct:.2f}%")
                     
                     # Execute Sell
-                    coin_ticker = symbol.split('-')[1]
+                    # Coinone symbols are "COIN/KRW", so split by '/'
+                    coin_ticker = symbol.split('/')[0]
                     amount_to_sell = exchange_api.fetch_balance(coin_ticker) if not config.dry_run else pos.get('amount', 0)
                     exchange_api.place_market_sell_order(symbol, amount_to_sell)
                     

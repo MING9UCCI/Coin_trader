@@ -1,21 +1,23 @@
-import pyupbit
 import pandas_ta as ta
+import ccxt
+import pandas as pd
 from logger import logger
 
 class StrategyVBD:
-    def __init__(self, k_value=0.5):
+    def __init__(self, exchange=None, k_value=0.5):
         self.k_value = k_value
+        # CCXT instantiated correctly in main or locally
+        self.exchange = exchange if exchange else ccxt.coinone()
 
     def get_breakout_target(self, df):
         """
         Calculate Volatility Breakout target price based on previous day's data.
+        df must contain a pandas dataframe from CCXT fetch_ohlcv with columns ['high', 'low', 'open'].
         target = today_open + (prev_high - prev_low) * K
         """
         if df is None or len(df) < 2:
             return None
             
-        # VBD is typically calculated using Daily candles
-        # So df here must be an 'interval="day"' dataframe
         prev_candle = df.iloc[-2]
         today_candle = df.iloc[-1]
         
@@ -28,44 +30,45 @@ class StrategyVBD:
         
         return target_price
 
-    def get_rsi(self, symbol, interval="minute60"):
-        """Get current RSI to pass to AI context"""
+    def get_rsi(self, symbol, timeframe='1h'):
+        """Get current 1-hour RSI to pass to AI context via CCXT"""
         try:
-            df = pyupbit.get_ohlcv(symbol, interval=interval, count=20)
-            if df is not None and not df.empty:
+            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=20)
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            
+            if not df.empty:
                rsi = ta.rsi(df['close'], length=14)
                return rsi.iloc[-1]
+               
             return 50.0 # fallback
-        except:
+        except Exception as e:
+            logger.error(f"Error calculating RSI for {symbol}: {e}")
             return 50.0
 
     def get_top_volume_coins(self, limit=5):
-        """Returns the top coins by 24h KRW volume on Upbit."""
+        """Returns the top coins by 24h KRW volume on Coinone."""
         try:
-            tickers = pyupbit.get_tickers(fiat="KRW")
-            # Filter stablecoins
-            stablecoins = ["KRW-USDT", "KRW-USDC", "KRW-FDUSD"]
-            tickers = [t for t in tickers if t not in stablecoins]
+            # Coinone tickers usually look like 'BTC/KRW'
+            tickers = self.exchange.fetch_tickers()
             
-            # Get current data including acc_trade_price_24h
-            current_data = pyupbit.get_current_price(tickers)
+            volume_list = []
+            stablecoins = ["USDT/KRW", "USDC/KRW", "FDUSD/KRW"]
             
-            # Since get_current_price returns a dict of ticker:price, we need a different approach
-            # Using pyupbit to fetch tickers overview (which takes more work) 
-            # OR simple logic: we pull market data
-            import requests # Upbit REST API directly for faster bulk volume
-            url = "https://api.upbit.com/v1/ticker"
-            querystring = {"markets": ",".join(tickers)}
-            response = requests.request("GET", url, params=querystring)
-            data = response.json()
+            for symbol, data in tickers.items():
+                if '/KRW' in symbol and symbol not in stablecoins:
+                    # 'quoteVolume' is usually the 24h volume in the quote currency (KRW)
+                    vol = data.get('quoteVolume', 0)
+                    if vol is not None:
+                        volume_list.append((symbol, vol))
             
-            # Sort by acc_trade_price_24h (24h trade volume)
-            sorted_data = sorted(data, key=lambda x: x['acc_trade_price_24h'], reverse=True)
+            # Sort descending by volume
+            volume_list.sort(key=lambda x: x[1], reverse=True)
             
-            top_coins = [x['market'] for x in sorted_data[:limit]]
-            logger.info(f"Scanned top {limit} volume coins: {top_coins}")
+            top_coins = [x[0] for x in volume_list[:limit]]
+            logger.info(f"Scanned top {limit} volume coins on Coinone: {top_coins}")
             return top_coins
             
         except Exception as e:
-            logger.error(f"Error finding top volume coins: {e}")
-            return ["KRW-BTC"] # Fallback to BTC
+            logger.error(f"Error finding top volume coins on Coinone: {e}")
+            return ["BTC/KRW"] # Fallback
+
