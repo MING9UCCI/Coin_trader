@@ -14,14 +14,17 @@ class Config:
         self.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
         
         try:
-            self.coin_count = int(os.getenv("COIN_COUNT", "5"))
+            self.coin_count = int(os.getenv("COIN_COUNT", "15"))
         except ValueError:
-            logging.error("Invalid COIN_COUNT settings in .env. Defaulting to 5 coins")
-            self.coin_count = 5
+            logging.error("Invalid COIN_COUNT settings in .env. Defaulting to 15 coins")
+            self.coin_count = 15
+            
+        # Max number of positions to hold concurrently
+        self.max_positions = int(os.getenv("MAX_POSITIONS", "5"))
             
         # VBD specific settings
-        # K value for VBD: restored to 0.5 for stable crypto trend following
-        self.vbd_k = 0.5
+        # K value for VBD: tightened to 0.6 for safer breakouts
+        self.vbd_k = float(os.getenv("VBD_K", "0.6"))
         # Trailing stop: 3% off high
         self.trailing_stop_pct = 0.03
             

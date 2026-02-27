@@ -98,9 +98,9 @@ def scan_and_trade(exchange_api, ai_advisor, strategy):
                 krw_avail = get_current_real_balance(exchange_api, "KRW")
                 if krw_avail is None: krw_avail = 0
                 
-                remaining_slots = config.coin_count - len(positions)
+                remaining_slots = config.max_positions - len(positions)
                 if remaining_slots <= 0:
-                    logger.info(f"[{symbol}] Maximum coin count reached. Can't buy more.")
+                    logger.info(f"[{symbol}] Maximum coin count ({config.max_positions}) reached. Can't buy more.")
                     continue
                     
                 allocate_amount = krw_avail / remaining_slots
@@ -151,9 +151,9 @@ def scan_and_trade(exchange_api, ai_advisor, strategy):
     logger.info("--- Scan Cycle Complete ---")
 
 def main():
-    welcome_msg = f"[bold cyan]AI Fusion Trading Bot V2.1 (Dynamic)[/bold cyan]\n" \
-                  f"Target: [yellow]Top {config.coin_count} Volume Coins[/yellow]\n" \
-                  f"Dynamic Allocation: [green]Active[/green]\n" \
+    welcome_msg = f"[bold cyan]AI Fusion Trading Bot V2.2 (Dynamic + Wide Range)[/bold cyan]\n" \
+                  f"Tracking: [yellow]Top {config.coin_count} Coins[/yellow] | Max Hold: [green]{config.max_positions} Coins[/green]\n" \
+                  f"VBD K-Value: [magenta]{config.vbd_k}[/magenta]\n" \
                   f"Dry Run Mode: [red]{config.dry_run}[/red]"
     
     console.print(Panel(welcome_msg, title="[bold magenta]Initialization[/bold magenta]", expand=False))
