@@ -57,6 +57,7 @@ class StrategyVBD:
     def get_top_volume_coins(self, limit=5):
         """Returns the top coins by 24h KRW volume on Coinone."""
         try:
+            from config import config
             # Coinone tickers usually look like 'BTC/KRW'
             tickers = self.exchange.fetch_tickers()
             
@@ -64,7 +65,7 @@ class StrategyVBD:
             stablecoins = ["USDT/KRW", "USDC/KRW", "FDUSD/KRW"]
             
             for symbol, data in tickers.items():
-                if '/KRW' in symbol and symbol not in stablecoins:
+                if '/KRW' in symbol and symbol not in stablecoins and symbol not in config.blacklist:
                     # 'quoteVolume' is usually the 24h volume in the quote currency (KRW)
                     vol = data.get('quoteVolume', 0)
                     if vol is not None:

@@ -21,6 +21,10 @@ class Config:
             
         # Max number of positions to hold concurrently
         self.max_positions = int(os.getenv("MAX_POSITIONS", "5"))
+        
+        # Blacklisted coins to completely ignore (e.g. "MYX/KRW,RIVER/KRW")
+        blacklist_str = os.getenv("BLACKLIST_COINS", "MYX/KRW,XRP/KRW,RIVER/KRW")
+        self.blacklist = [c.strip() for c in blacklist_str.split(',') if c.strip()]
             
         # VBD specific settings
         # K value for VBD: tightened to 0.6 for safer breakouts
