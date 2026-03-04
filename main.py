@@ -10,6 +10,7 @@ from ai_advisor import AIAdvisor
 from strategy_vbd import StrategyVBD
 from trade_logger import log_trade
 from auto_optimizer import run_optimizer
+from market_filter import MarketFilter
 
 console = Console()
 
@@ -49,7 +50,7 @@ def sync_positions(exchange_api, strategy):
     except Exception as e:
         logger.error(f"Failed to sync positions: {e}")
 
-def scan_and_trade(exchange_api, ai_advisor, strategy):
+def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
     logger.info("--- Starting VBD + AI Scan Cycle ---")
     
     # 1. Update Top Volume Coins
@@ -71,6 +72,11 @@ def scan_and_trade(exchange_api, ai_advisor, strategy):
                 
                 # Trailing stop condition: Drop by trailing_stop_pct (e.g. 3%) from peak
                 drop_threshold = highest_price * (1.0 - config.trailing_stop_pct)
+                
+                # [Tier 2 Macro Filter]: If Panic mode, sell immediately
+                if market_filter.news_panic_flag:
+                    logger.critical(f"🚨 [{symbol}] PANIC SELL TRIGGERED BY GLOBAL NEWS! Liquidating position.")
+                    drop_threshold = current_price + 99999999 # Force trigger sell
                 
                 if current_price <= drop_threshold:
                     profit_pct = ((current_price - buy_price) / buy_price) * 100
@@ -104,6 +110,11 @@ def scan_and_trade(exchange_api, ai_advisor, strategy):
                 
                 continue # Skip buying logic since we already hold it
 
+            # --- Filter: Check News Panic before Buying ---
+            if market_filter.news_panic_flag:
+                # Skipping new buys
+                continue
+
             # b) Breakout Check (If NOT holding symbol)
             # Find the breakout target price
             # Get 15m OHLCV from the previous 15-minute candle
@@ -114,6 +125,11 @@ def scan_and_trade(exchange_api, ai_advisor, strategy):
             target_price = strategy.get_breakout_target(df_15m)
             
             if target_price and current_price >= target_price:
+                # [Tier 3 Macro Filter]: 비트코인 단기 폭락(Dumping) 중이면 진입 금지
+                if market_filter.check_btc_trend() == "DUMPING":
+                    logger.warning(f"[{symbol}] Buy cancelled due to BTC 4H Dumping Trend.")
+                    continue
+                    
                 # 1단계: 돈이 충분한지 (최소 5,500원) 미리 검사해서 AI 호출 낭비 방지
                 krw_avail = get_current_real_balance(exchange_api, "KRW")
                 if krw_avail is None: krw_avail = 0
@@ -128,11 +144,16 @@ def scan_and_trade(exchange_api, ai_advisor, strategy):
                 # 수수료/슬리피지 대비 1% 자체를 빼버려서 극단적으로 안전한 금액만 주문 (잔액 부족 에러 원천 차단)
                 allocate_amount = int(allocate_amount * 0.99)
                 
-                # 2. 복리리스크 방지: 한 종목당 최대 투자금(캡)을 30만원으로 제한
-                MAX_ALLOCATION_PER_COIN = 300000
+                # 2. 복리리스크 방지 및 공포/탐욕 캡 적용 (Tier 1 필터 적용)
+                if market_filter.fear_greed_score <= 30:
+                    MAX_ALLOCATION_PER_COIN = 50000
+                    # Log only occasionally or simply reduce silently since it loops 15 times
+                else:
+                    MAX_ALLOCATION_PER_COIN = 300000
+                    
                 if allocate_amount > MAX_ALLOCATION_PER_COIN:
                     allocate_amount = MAX_ALLOCATION_PER_COIN
-                    logger.info(f"[{symbol}] Allocation capped at {MAX_ALLOCATION_PER_COIN:,} KRW for safety.")
+                    logger.info(f"[{symbol}] Allocation capped at {MAX_ALLOCATION_PER_COIN:,} KRW (F&G Score: {market_filter.fear_greed_score}).")
                 
                 # 강제로 최소 주문 금액(5,500원) 이상으로 보정 (수수료 포함 안전빵)
                 if allocate_amount < 5500:
@@ -197,16 +218,24 @@ def main():
         krw_real = get_current_real_balance(exchange_api, "KRW")
         logger.info(f"💰 Current Coinone KRW Balance: {krw_real:,.0f} 원")
 
+        market_filter = MarketFilter(ai_advisor, exchange_api)
+        market_filter.update_fear_and_greed() # Run once on boot
+        market_filter.analyze_global_news()   # Run once on boot
+
         sync_positions(exchange_api, strategy)
 
-        scan_and_trade(exchange_api, ai_advisor, strategy)
+        scan_and_trade(exchange_api, ai_advisor, strategy, market_filter)
         
         # Check every 1 minute.
-        schedule.every(1).minutes.do(scan_and_trade, exchange_api, ai_advisor, strategy)
+        schedule.every(1).minutes.do(scan_and_trade, exchange_api, ai_advisor, strategy, market_filter)
         
         # Auto-Optimizer Schedule: Twice a day (09:00, 21:00 KST)
         schedule.every().day.at("09:00").do(run_optimizer)
         schedule.every().day.at("21:00").do(run_optimizer)
+        
+        # Market Filter Schedules
+        schedule.every().day.at("08:50").do(market_filter.update_fear_and_greed)
+        schedule.every(4).hours.do(market_filter.analyze_global_news)
         
         logger.info("Entering multi-coin tracking loop. Press Ctrl+C to abort.")
         while True:
