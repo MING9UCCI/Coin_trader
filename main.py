@@ -8,6 +8,8 @@ from logger import logger
 from exchange_api import ExchangeAPI
 from ai_advisor import AIAdvisor
 from strategy_vbd import StrategyVBD
+from trade_logger import log_trade
+from auto_optimizer import run_optimizer
 
 console = Console()
 
@@ -39,7 +41,8 @@ def sync_positions(exchange_api, strategy):
                     positions[symbol] = {
                         'buy_price': current_price,
                         'highest_price': current_price,
-                        'amount': free_amount
+                        'amount': free_amount,
+                        'buy_time': time.time() # 1. 시간 초과 체크를 위해 현재 시간 등록
                     }
                     logger.info(f"Synced existing position: [{symbol}] (Amount: {free_amount:.4f}, Checkpoint Price: {current_price:,})")
 
@@ -74,13 +77,30 @@ def scan_and_trade(exchange_api, ai_advisor, strategy):
                     logger.info(f"[{symbol}] Trailing Stop Triggered! Selling at {current_price:,} KRW (Buy: {buy_price:,}). PNL: {profit_pct:.2f}%")
                     
                     # Execute Sell
-                    # Coinone symbols are "COIN/KRW", so split by '/'
                     coin_ticker = symbol.split('/')[0]
                     amount_to_sell = exchange_api.fetch_balance(coin_ticker) if not config.dry_run else pos.get('amount', 0)
-                    exchange_api.place_market_sell_order(symbol, amount_to_sell)
+                    order_result = exchange_api.place_market_sell_order(symbol, amount_to_sell)
                     
-                    # Remove from tracked positions
-                    del positions[symbol]
+                    # 1. 찌꺼기 방지: 매도 주문이 '성공적으로' 체결되었을 때만 메모리에서 삭제
+                    if order_result:
+                        log_trade(symbol, buy_price, current_price, amount_to_sell)
+                        del positions[symbol]
+                        logger.info(f"[{symbol}] Trailing Stop executed and position cleared.")
+                    else:
+                        logger.warning(f"[{symbol}] Sell order failed or partially filled. Keeping in memory to retry on next tick.")
+                
+                # 3. 좀비 포지션 정리 (Time-Stop): 12시간 보유하고도 트레일링 스탑을 못 쳤다면 청산 (기회비용 확보)
+                elif (time.time() - pos.get('buy_time', time.time())) > 43200: # 12 hours = 43200 sec
+                    profit_pct = ((current_price - buy_price) / buy_price) * 100
+                    logger.info(f"[{symbol}] ⏰ TIME-STOP Triggered! Held over 12 hours. Selling at {current_price:,} KRW. PNL: {profit_pct:.2f}%")
+                    
+                    coin_ticker = symbol.split('/')[0]
+                    amount_to_sell = exchange_api.fetch_balance(coin_ticker) if not config.dry_run else pos.get('amount', 0)
+                    order_result = exchange_api.place_market_sell_order(symbol, amount_to_sell)
+                    
+                    if order_result:
+                        log_trade(symbol, buy_price, current_price, amount_to_sell)
+                        del positions[symbol]
                 
                 continue # Skip buying logic since we already hold it
 
@@ -107,6 +127,12 @@ def scan_and_trade(exchange_api, ai_advisor, strategy):
                 
                 # 수수료/슬리피지 대비 1% 자체를 빼버려서 극단적으로 안전한 금액만 주문 (잔액 부족 에러 원천 차단)
                 allocate_amount = int(allocate_amount * 0.99)
+                
+                # 2. 복리리스크 방지: 한 종목당 최대 투자금(캡)을 30만원으로 제한
+                MAX_ALLOCATION_PER_COIN = 300000
+                if allocate_amount > MAX_ALLOCATION_PER_COIN:
+                    allocate_amount = MAX_ALLOCATION_PER_COIN
+                    logger.info(f"[{symbol}] Allocation capped at {MAX_ALLOCATION_PER_COIN:,} KRW for safety.")
                 
                 # 강제로 최소 주문 금액(5,500원) 이상으로 보정 (수수료 포함 안전빵)
                 if allocate_amount < 5500:
@@ -139,7 +165,8 @@ def scan_and_trade(exchange_api, ai_advisor, strategy):
                         positions[symbol] = {
                             'buy_price': current_price,
                             'highest_price': current_price,
-                            'amount': bought_amount
+                            'amount': bought_amount,
+                            'buy_time': time.time()
                         }
                         logger.info(f"[{symbol}] Position Opened successfully.")
                 else:
@@ -151,9 +178,9 @@ def scan_and_trade(exchange_api, ai_advisor, strategy):
     logger.info("--- Scan Cycle Complete ---")
 
 def main():
-    welcome_msg = f"[bold cyan]AI Fusion Trading Bot V2.2 (Dynamic + Wide Range)[/bold cyan]\n" \
+    welcome_msg = f"[bold cyan]AI Fusion Trading Bot + Auto Optimizer (KST)[/bold cyan]\n" \
                   f"Tracking: [yellow]Top {config.coin_count} Coins[/yellow] | Max Hold: [green]{config.max_positions} Coins[/green]\n" \
-                  f"VBD K-Value: [magenta]{config.vbd_k}[/magenta]\n" \
+                  f"VBD K-Value: [magenta]{config.vbd_k}[/magenta] | Target Stop: [red]{config.trailing_stop_pct*100:.1f}%[/red]\n" \
                   f"Dry Run Mode: [red]{config.dry_run}[/red]"
     
     console.print(Panel(welcome_msg, title="[bold magenta]Initialization[/bold magenta]", expand=False))
@@ -174,11 +201,14 @@ def main():
 
         scan_and_trade(exchange_api, ai_advisor, strategy)
         
-        # In a highly volatile breakout + trailing stop, we should check frequently.
         # Check every 1 minute.
         schedule.every(1).minutes.do(scan_and_trade, exchange_api, ai_advisor, strategy)
         
-        logger.info("Entering multi-coin tracking loop (every 1m). Press Ctrl+C to abort.")
+        # Auto-Optimizer Schedule: Twice a day (09:00, 21:00 KST)
+        schedule.every().day.at("09:00").do(run_optimizer)
+        schedule.every().day.at("21:00").do(run_optimizer)
+        
+        logger.info("Entering multi-coin tracking loop. Press Ctrl+C to abort.")
         while True:
             schedule.run_pending()
             time.sleep(1)

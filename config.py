@@ -27,10 +27,10 @@ class Config:
         self.blacklist = [c.strip() for c in blacklist_str.split(',') if c.strip()]
             
         # VBD specific settings
-        # K value for VBD: tightened to 0.6 for safer breakouts
-        self.vbd_k = float(os.getenv("VBD_K", "0.6"))
-        # Trailing stop: 3% off high
-        self.trailing_stop_pct = 0.03
+        # K value for VBD: Default to 0.5 for a balance between sensitivity and fake-out resistance
+        self.vbd_k = float(os.getenv("VBD_K", "0.5"))
+        # Trailing stop: Default to 2% (0.02)
+        self.trailing_stop_pct = float(os.getenv("TRAILING_STOP_PCT", "0.02"))
             
         self.dry_run = os.getenv("DRY_RUN", "True").lower() in ("true", "1", "t")
 
@@ -40,5 +40,11 @@ class Config:
             raise ValueError("COINONE_ACCESS_KEY and COINONE_SECRET_KEY must be set in .env when DRY_RUN is False.")
         if not self.gemini_api_key:
              logging.warning("GEMINI_API_KEY is not set. AI Advisor will default to 'Confirm' fallback.")
+
+    def reload(self):
+        """Reloads dynamic strategy parameters from .env without restarting the bot."""
+        load_dotenv(override=True)
+        self.vbd_k = float(os.getenv("VBD_K", str(self.vbd_k)))
+        self.trailing_stop_pct = float(os.getenv("TRAILING_STOP_PCT", str(self.trailing_stop_pct)))
 
 config = Config()

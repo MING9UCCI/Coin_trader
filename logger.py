@@ -1,5 +1,5 @@
-import logging
 import os
+from datetime import datetime, timezone, timedelta
 from logging.handlers import RotatingFileHandler
 from rich.logging import RichHandler
 
@@ -8,6 +8,10 @@ def setup_logger(name="trading_bot", log_file="trading.log", level=logging.INFO)
     logger = logging.getLogger(name)
     logger.setLevel(level)
     
+    # Use KST (UTC+9) for logging
+    KST = timezone(timedelta(hours=9))
+    logging.Formatter.converter = lambda *args: datetime.now(KST).timetuple()
+
     # Avoid adding handlers multiple times if logger is already configured
     if not logger.handlers:
         # File Handler (Rotating)
