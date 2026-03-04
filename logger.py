@@ -22,7 +22,12 @@ def setup_logger(name="trading_bot", log_file="trading.log", level=logging.INFO)
         logger.addHandler(file_handler)
 
         # Console Handler (Rich UI)
-        console_handler = RichHandler(rich_tracebacks=True, show_time=True, show_path=False)
+        console_handler = RichHandler(
+            rich_tracebacks=True, 
+            show_time=True, 
+            show_path=False,
+            log_time_format="[%y/%m/%d %H:%M:%S]"
+        )
         logger.addHandler(console_handler)
 
     return logger
