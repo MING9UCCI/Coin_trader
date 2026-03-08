@@ -188,4 +188,14 @@ class ExchangeAPI:
             logger.info(f"[DRY RUN] Simulated Market Sell for {symbol} of amount {amount}")
             return {"uuid": f"dry-run-sell-{time.time()}"}
 
-        return self._wait_and_fill_limit_order(symbol, 'SELL', coin_budget=amount)
+        # Fetch actual real-time balance to prevent Error 103 (Lack of Balance) due to fee deduction
+        base_ticker = symbol.split('/')[0]
+        actual_balance = self.fetch_balance(base_ticker)
+        
+        safe_amount = min(amount, actual_balance)
+        
+        if safe_amount <= 0.0001: 
+             logger.warning(f"[{symbol}] Balance ({safe_amount}) is too small/dust to sell. Aborting sell order.")
+             return None
+
+        return self._wait_and_fill_limit_order(symbol, 'SELL', coin_budget=safe_amount)

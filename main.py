@@ -8,7 +8,7 @@ from logger import logger
 from exchange_api import ExchangeAPI
 from ai_advisor import AIAdvisor
 from strategy_vbd import StrategyVBD
-from trade_logger import log_trade
+from database import record_trade
 from auto_optimizer import run_optimizer
 from market_filter import MarketFilter
 
@@ -17,6 +17,7 @@ console = Console()
 # Dictionary to hold the state of positions
 # positions = { 'KRW-BTC': {'buy_price': 50000, 'highest_price': 55000, 'amount': 0.01} }
 positions = {}
+cooldowns = {} # Tracks sell timestamps to prevent immediate re-entry
 
 def get_current_real_balance(exchange_api, ticker="KRW"):
     return exchange_api.fetch_balance(ticker)
@@ -78,9 +79,12 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
                     logger.critical(f"🚨 [{symbol}] PANIC SELL TRIGGERED BY GLOBAL NEWS! Liquidating position.")
                     drop_threshold = current_price + 99999999 # Force trigger sell
                 
-                if current_price <= drop_threshold:
+                # NEW: Hard Stop Loss at -3% from entry to prevent sliding failures
+                hard_stop = buy_price * 0.97
+                
+                if current_price <= drop_threshold or current_price <= hard_stop:
                     profit_pct = ((current_price - buy_price) / buy_price) * 100
-                    logger.info(f"[{symbol}] Trailing Stop Triggered! Selling at {current_price:,} KRW (Buy: {buy_price:,}). PNL: {profit_pct:.2f}%")
+                    logger.info(f"[{symbol}] STOP Triggered! Selling at {current_price:,} KRW (Buy: {buy_price:,}). PNL: {profit_pct:.2f}%")
                     
                     # Execute Sell
                     coin_ticker = symbol.split('/')[0]
@@ -89,9 +93,10 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
                     
                     # 1. 찌꺼기 방지: 매도 주문이 '성공적으로' 체결되었을 때만 메모리에서 삭제
                     if order_result:
-                        log_trade(symbol, buy_price, current_price, amount_to_sell)
+                        record_trade(symbol, buy_price, current_price, amount_to_sell)
                         del positions[symbol]
-                        logger.info(f"[{symbol}] Trailing Stop executed and position cleared.")
+                        cooldowns[symbol] = time.time()
+                        logger.info(f"[{symbol}] Position cleared & Added to 3-hour cooldown.")
                     else:
                         logger.warning(f"[{symbol}] Sell order failed or partially filled. Keeping in memory to retry on next tick.")
                 
@@ -105,8 +110,9 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
                     order_result = exchange_api.place_market_sell_order(symbol, amount_to_sell)
                     
                     if order_result:
-                        log_trade(symbol, buy_price, current_price, amount_to_sell)
+                        record_trade(symbol, buy_price, current_price, amount_to_sell)
                         del positions[symbol]
+                        cooldowns[symbol] = time.time()
                 
                 continue # Skip buying logic since we already hold it
 
@@ -114,6 +120,14 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
             if market_filter.news_panic_flag:
                 # Skipping new buys
                 continue
+
+            # NEW: Check Cooldown (Block re-entry for 3 hours)
+            if symbol in cooldowns:
+                elapsed = time.time() - cooldowns[symbol]
+                if elapsed < 10800:
+                    continue
+                else:
+                    del cooldowns[symbol]
 
             # b) Breakout Check (If NOT holding symbol)
             # Find the breakout target price

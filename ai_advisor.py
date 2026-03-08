@@ -22,9 +22,15 @@ class AIAdvisor:
             # If no API key, we blindly trust the mathematical breakout
             return True, "No AI configured. Auto-approved."
 
+        from database import get_recent_performance
+        recent_trades = get_recent_performance(symbol)
+        history_text = "No recent trade history."
+        if recent_trades:
+            history_text = "\n".join([f"- Trade: {t['time_str']} | Profit: {t['profit_pct']}%" for t in recent_trades])
+
         prompt = f"""
 You are an expert cryptocurrency trading assistant.
-We are using the Volatility Breakout (VBD) strategy on a 15-minute timeframe (Aggressive Scalping) on Coinone. 
+We are using the Volatility Breakout (VBD) strategy on a 15-minute timeframe on Coinone. 
 
 Context:
 - Ticker: {symbol}
@@ -33,13 +39,16 @@ Context:
 - 15m VBD Target Breakout Price: {target_price:,} KRW (K={k_value})
 - Current 60m RSI: {rsi:.2f}
 
-The price has just crossed the 15-minute breakout target. This implies a sudden upward momentum block.
-Given that this coin is in the upper bounds of volume and momentum is building, do you authorize this BUY?
+[RECENT TRADE HISTORY FOR THIS BOT CONCERNING {symbol}]
+{history_text}
+
+The price has just crossed the 15-minute breakout target. 
+Given that this coin is in the upper bounds of volume, momentum is building, AND looking at the bot's past successes/failures with this specific coin, do you authorize this BUY?
 
 Instructions:
 1. Briefly analyze the provided metrics.
-2. In the very last line of your response, output exactly "DECISION: BUY" or "DECISION: WAIT". 
-3. IMPORTANT: This is an AGGRESSIVE SCALPING bot. Do NOT veto a trade just because RSI is high (e.g. >80). High RSI means strong momentum. Unless you detect a clear anomaly, almost always output DECISION: BUY.
+2. If the Trade History shows repeated consecutive losses (e.g., multiple negative PNLs today), YOU MUST VETO THE TRADE to prevent bleeding money on a deceptive trending coin.
+3. In the very last line of your response, output exactly "DECISION: BUY" or "DECISION: WAIT". 
         """
         
         try:

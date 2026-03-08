@@ -1,8 +1,16 @@
 import logging
 import os
+import time
 from datetime import datetime, timezone, timedelta
 from logging.handlers import RotatingFileHandler
 from rich.logging import RichHandler
+
+# Force Timezone to KST (Asia/Seoul) for the entire application to fix Docker/VPS drift
+os.environ['TZ'] = 'Asia/Seoul'
+try:
+    time.tzset()
+except AttributeError:
+    pass # Windows fallback
 
 def setup_logger(name="trading_bot", log_file="trading.log", level=logging.INFO):
     """Sets up a logger with console and file handlers."""
