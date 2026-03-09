@@ -96,8 +96,10 @@ class ExchangeAPI:
         at the new price.
         """
         base, quote = symbol.split('/')
-        remaining_krw = krw_budget
-        remaining_coin = coin_budget
+        remaining_krw = krw_budget or 0
+        remaining_coin = coin_budget or 0
+        start_krw = remaining_krw
+        start_coin = remaining_coin
         
         for attempt in range(max_retries):
             current_price = self.fetch_current_price(symbol)
@@ -180,6 +182,16 @@ class ExchangeAPI:
             except Exception as e:
                 logger.error(f"[{symbol}] Exception in order chase loop: {e}")
                 
+        # 최대 재시도(max_retries)가 끝났거나, 잔여 물량이 너무 작아 루프를 탈출한 경우
+        # 조금이라도 체결된 이력이 있다면 '실패(None)'가 아닌 '부분 체결(Partial Success)'로 보고하여 
+        # 메인루프에서 포지션을 추적/청산할 수 있게 유도함.
+        if side == 'BUY' and remaining_krw < start_krw:
+            logger.warning(f"[{symbol}] BUY order max retries reached but partially filled. Tracking it.")
+            return {"result": "partial_success"}
+        if side == 'SELL' and remaining_coin < start_coin:
+            logger.warning(f"[{symbol}] SELL order max retries reached but partially filled. Clearing it.")
+            return {"result": "partial_success"}
+            
         logger.error(f"[{symbol}] Failed to fully fill {side} order after {max_retries} attempts.")
         return None
 
@@ -202,9 +214,12 @@ class ExchangeAPI:
         actual_balance = self.fetch_balance(base_ticker)
         
         safe_amount = min(amount, actual_balance)
+        current_price = self.fetch_current_price(symbol)
         
-        if safe_amount <= 0.0001: 
-             logger.warning(f"[{symbol}] Balance ({safe_amount}) is too small/dust to sell. Aborting sell order.")
-             return None
+        # 먼지(Dust) 방지 필터: 보유 잔고의 가치가 4,500원 미만이면 코인원 최소 주문금액(5,000원) 미달로 무조건 에러남.
+        # 이 경우 '알아서 다 팔렸거나, 팔 수 없는 먼지'로 간주하고 무한 루프에 빠지지 않도록 처리함.
+        if current_price and (safe_amount * current_price) < 4500:
+             logger.warning(f"[{symbol}] Balance ({safe_amount} 개, 약 {safe_amount * current_price:.0f} 원) is practically dust or below minimum order size. Clearing from memory.")
+             return {"result": "dust_cleared", "filled_price": current_price}
 
         return self._wait_and_fill_limit_order(symbol, 'SELL', coin_budget=safe_amount)
