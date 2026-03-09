@@ -30,11 +30,11 @@ class AIAdvisor:
 
         prompt = f"""
 You are an expert cryptocurrency trading assistant.
-We are using the Volatility Breakout (VBD) strategy on a 15-minute timeframe on Coinone. 
+We are using the Volatility Breakout (VBD) strategy on a 15-minute timeframe on {config.active_exchange}. 
 
 Context:
 - Ticker: {symbol}
-- Rank by 24h Volume on Coinone: Top {volume_rank}
+- Rank by 24h Volume on {config.active_exchange}: Top {volume_rank}
 - Current Price: {current_price:,} KRW
 - 15m VBD Target Breakout Price: {target_price:,} KRW (K={k_value})
 - Current 60m RSI: {rsi:.2f}
