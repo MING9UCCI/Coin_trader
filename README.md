@@ -1,27 +1,31 @@
-# 🤖 AI Fusion Crypto Trading Bot (Coinone V2)
+# 🤖 AI Fusion Crypto Trading Bot (Dual-Core V3)
 
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)
 ![Gemini AI](https://img.shields.io/badge/AI-Google_Gemini-orange.svg)
-![CCXT](https://img.shields.io/badge/Exchange-Coinone_(CCXT)-green.svg)
+![Exchange](https://img.shields.io/badge/Exchange-Upbit%20%7C%20Coinone-green.svg)
 
-**구글의 최신 경량화 LLM(Gemini 2.5 Flash Lite)과 전통적인 퀀트 지표를 결합한 완전 자동화 24시간 가상자산 트레이딩 봇**입니다. 코인원(Coinone) 거래소를 타겟으로 개발되었으며, 15분 봉 기준의 공격적인 단타(Scalping) 포지션에서 변동성 돌파(VBD)를 감지하고, AI의 최종 승인을 거쳐 즉각적인 시장가 매매를 수행합니다.
+**구글의 최신 경량화 LLM(Gemini 2.5 Flash Lite)과 전통적인 퀀트 지표를 결합한 완전 자동화 24시간 가상자산 트레이딩 봇**입니다. **Upbit**와 **Coinone** 코어 모두 완벽 지원하며, 15분 봉 기준의 공격적인 단타(Scalping) 포지션에서 변동성 돌파(VBD)를 감지하고 AI의 최종 승인과 3중 거시경제 필터를 거쳐 즉각적인 시장가 매매를 수행합니다.
 
 ---
 
 ## 🚀 핵심 기능 (Key Features)
 
-*   **퀀트 기반 스캐닝 (VBD 전략):** 래리 윌리엄스의 변동성 돌파 전략(Volatility Breakout)과 상대강도지수(RSI)를 15분 봉 캔들에 적용하여, 거래량 상위 **15개 코인 중에서 최대 5개 포지션만 유지하며 안정적인 분산 투자를 진행합니다.** (장중 폭발적 모멘텀 캐치)
-*   **AI 실시간 검증 시스템:** 타점이 감지되면 구글의 최신 **`gemini-2.5-flash-lite`** 모델에게 즉시 현재 상황(티커, 현재가, 목표가, RSI 수치 등)을 텍스트로 치환하여 프롬프트로 전송합니다. AI가 모멘텀의 유효성을 분석하여 `BUY(매수)` 또는 `WAIT(관망)` 형식의 최종 의사결정을 내립니다.
-*   **다이내믹 자산 분배 로직:** 매분마다 거래소 API를 추적하여 사용 가능한 실시간 원화(KRW) 잔고를 파악합니다. 남은 예산에 맞춰 보유 가능한 코인의 슬롯을 동적으로 계산하고, 거래소 최소 주문 금액(예: 5,500 KRW) 미만인 경우 API 호출 자체를 차단하여 시스템 안정성을 높였습니다.
-*   **트레일링 스톱 (Trailing Stop) 시스템:** 수익을 극대화하면서 손실을 제한하기 위해, 매수 직후부터 해당 코인의 '최고점'을 지속적으로 기록합니다. 최고점 대비 **3% 이상 하락**하는 즉시 시장가 매도(청산) 주문을 발생시킵니다.
-*   **CCXT V2.1 API 우회 기술 적용:** 코인원의 폐쇄적인 API 아키텍처(시장가 주문 미지원, 엄격한 payload 검열)를 파훼하기 위해 고도로 커스터마이징된 CCXT 래퍼 로직이 탑재되어 있습니다.
+*   **듀얼 거래소 스위치 탑재:** `ACTIVE_EXCHANGE=UPBIT` 환경 변수 한 줄로 한국 1위 업비트(수수료/유동성 깡패)와 코인원 체제를 봇 재부팅 없이 완벽 호환 전환할 수 있습니다. 업비트 전환 시 오차 없는 네이티브 시장가 매매를 지원합니다.
+*   **퀀트 기반 스캐닝 (VBD 전략):** 변동성 돌파 전략(Volatility Breakout)과 상대강도지수(RSI)를 15분 봉 캔들에 적용, 거래대금 상위 15개 주도주 코인 안에서 최대 N개의 슬롯만 유지하여 복리 폭발력을 극대화합니다.
+*   **AI 실시간 필터 및 승인 시스템 (Gemini 2.5):** 타점이 감지되면 구글 제미나이에게 현재 상황(티커, 현재가, 목표가, RSI 수치 등)을 텍스트로 치환하여 프롬프트로 전송합니다. AI가 모멘텀의 유효성을 분석하여 `BUY(매수)` 또는 `WAIT(관망)`을 결정합니다.
+*   **🛡️ 3-Tier Macro Market Filters (3중 현금 방어):** 폭락장과 둠스데이 대비를 위한 거시경제 필터망.
+    - **Tier 1 (Daily F&G Index):** 일일 공포/탐욕 지수가 30 이하(극단적 공포)일 경우 투자 리미트를 1/6으로 억제.
+    - **Tier 2 (AI Global News Panic):** 매 4시간마다 코인데스크 RSS 뉴스를 긁어 AI가 전세계 치명적 악재(거래소 해킹, 전쟁 발발 등) 판별 시 전량 시장가 패대기 및 매수 셧다운(BUY_LOCK).
+    - **Tier 3 (BTC 4H Trend):** 매수 직전 대장주(BTC) 4시간 봉 단기 폭락(-3% 이상) 시 알트코인 매수 기각.
+*   **다이내믹 총자산(Portfolio) 밸런싱 로직:** 특정 빈 슬롯에 몰빵되는 현상을 막기 위해, 매번 현재 (남은 현금 + 코인 잔고 가치 총합) / N 공식을 사용해 일정한 비중 배팅을 철저히 유지합니다.
+*   **오토-옵티마이저 (Auto-Optimizer):** 매일 하루 두 번(09:00, 21:00) 자체 매매 이력(CSV)을 읽어들여 봇 스스로 손익비율과 승률을 수학적으로 계산한 후 다음 매매의 `VBD_K` 값과 `Trailing Stop` 퍼센티지를 조율(파라미터 자가학습)합니다.
 
 ---
 
 ## 🛠️ 기술 스택 (Architecture & Tech Stack)
 
 *   **Language:** Python 3.10+
-*   **Exchange API Engine:** `ccxt` (Coinone API 규격에 맞춰 페이로드 및 엔드포인트를 V2로 다운그레이드 패치하여 사용)
+*   **Exchange API Engine:** `pyupbit` (업비트 기본 지원), `ccxt` (코인원 레거시 우회 지원)
 *   **AI Engine:** `google-genai` SDK (Gemini 2.5 Flash Lite 탑재)
 *   **Data Processing:** `pandas`, `pandas-ta` (보조 지표 및 OHLCV 데이터 연산)
 *   **Automation:** `schedule` (백그라운드 스케줄러 루프 구동)
@@ -67,12 +71,18 @@
     루트 디렉토리에 `.env` 파일을 생성합니다. **이 파일은 GitHub에 절대 커밋되지 않도록 `.gitignore`에 등록되어 있습니다.**
     ```ini
     # .env
+    ACTIVE_EXCHANGE=UPBIT     # UPBIT 또는 COINONE
+
+    UPBIT_ACCESS_KEY=발급받은_업비트_액세스키
+    UPBIT_SECRET_KEY=발급받은_업비트_시크릿키
     COINONE_ACCESS_KEY=발급받은_코인원_액세스키
     COINONE_SECRET_KEY=발급받은_코인원_시크릿키
     GEMINI_API_KEY=발급받은_구글_제미나이_API키
 
-    COIN_COUNT=5
-    DRY_RUN=False # True로 변경 시 실제 매매 없이 모의 투자 로직만 돌아갑니다.
+    COIN_COUNT=15             # 스캔할 거래량 상위 코인 갯수
+    MAX_POSITIONS=5           # 동시 최대 보유 종목 제한 수
+    BLACKLIST_COINS=MYX/KRW   # 진입 금지 코인 (쉼표 구분)
+    DRY_RUN=False             # True로 변경 시 실제 매매 없이 모의투자 로깅만 됨.
     ```
 
     ```bash
