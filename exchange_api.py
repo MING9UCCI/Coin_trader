@@ -117,6 +117,13 @@ class CoinoneAPI:
         # Format explicitly to drop floating point noise
         return float(format(math.floor(price / tick) * tick, '.4f'))
 
+    def _amount_to_tick(self, amount: float) -> float:
+        """
+        Rounds the quantity down to 4 decimal places for Coinone.
+        Coinone strictly accepts max 4 decimal places for quantity on most pairs.
+        """
+        return float(format(math.floor(amount * 10000) / 10000, '.4f'))
+
     def _wait_and_fill_limit_order(self, symbol: str, side: str, krw_budget=None, coin_budget=None, max_retries=5):
         """
         Auto-chasing limit order to spoof a market fill.
@@ -159,14 +166,9 @@ class CoinoneAPI:
                 if remaining_coin <= 0: break
                 amount = remaining_coin
                 
-            # Use CCXT's native precision formatter to safely truncate the exact decimal places allowed by Coinone.
-            # This dramatically prevents 'dust' (0.0000001 coins) from being left behind in the wallet.
-            try:
-                qty_formatted_str = self.exchange.amount_to_precision(symbol, amount)
-                qty_formatted = float(qty_formatted_str)
-            except Exception:
-                # Failsafe if CCXT fails to load market precision
-                qty_formatted = math.floor(amount * 10000) / 10000
+            # Use native formatting instead of CCXT's unreliable precision method for quantities
+            # Most Coinone coins allow 4 decimals. Using more triggers Error 310 or Parameter Error.
+            qty_formatted = self._amount_to_tick(amount)
                 
             if qty_formatted <= 0: break
 
