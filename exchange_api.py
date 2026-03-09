@@ -1,4 +1,5 @@
 import ccxt
+import math
 import time
 import pandas as pd
 from config import config
@@ -110,7 +111,9 @@ class ExchangeAPI:
                 if remaining_coin <= 0: break
                 amount = remaining_coin
                 
-            qty_formatted = float(f"{amount:.4f}")
+            # Use floor (truncation) instead of rounding to prevent exceeding actual balance.
+            # e.g. balance=265.60555 → round gives 265.6056 > balance → Coinone error 103 (Lack of Balance)
+            qty_formatted = math.floor(amount * 10000) / 10000
             if qty_formatted <= 0: break
 
             request_params = {

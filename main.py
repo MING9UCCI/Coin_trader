@@ -113,7 +113,9 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
                         record_trade(symbol, buy_price, current_price, amount_to_sell)
                         del positions[symbol]
                         cooldowns[symbol] = time.time()
-                
+                    else:
+                        logger.warning(f"[{symbol}] Time-stop sell order failed. Keeping in memory to retry on next tick.")
+
                 continue # Skip buying logic since we already hold it
 
             # --- Filter: Check News Panic before Buying ---
