@@ -111,9 +111,15 @@ class ExchangeAPI:
                 if remaining_coin <= 0: break
                 amount = remaining_coin
                 
-            # Use floor (truncation) instead of rounding to prevent exceeding actual balance.
-            # e.g. balance=265.60555 → round gives 265.6056 > balance → Coinone error 103 (Lack of Balance)
-            qty_formatted = math.floor(amount * 10000) / 10000
+            # Use CCXT's native precision formatter to safely truncate the exact decimal places allowed by Coinone.
+            # This dramatically prevents 'dust' (0.0000001 coins) from being left behind in the wallet.
+            try:
+                qty_formatted_str = self.exchange.amount_to_precision(symbol, amount)
+                qty_formatted = float(qty_formatted_str)
+            except Exception:
+                # Failsafe if CCXT fails to load market precision
+                qty_formatted = math.floor(amount * 10000) / 10000
+                
             if qty_formatted <= 0: break
 
             request_params = {

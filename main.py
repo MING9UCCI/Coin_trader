@@ -150,12 +150,21 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
                 krw_avail = get_current_real_balance(exchange_api, "KRW")
                 if krw_avail is None: krw_avail = 0
                 
-                remaining_slots = config.max_positions - len(positions)
-                if remaining_slots <= 0:
+                if len(positions) >= config.max_positions:
                     logger.info(f"[{symbol}] Maximum coin count ({config.max_positions}) reached. Can't buy more.")
                     continue
                     
-                allocate_amount = krw_avail / remaining_slots
+                # 1단계 (개선건): 빈 슬롯에 몰빵되는 것을 막기 위해 '총 자산(Total Portfolio)' 기준으로 균등 할당
+                # 보유 중인 코인들의 대략적인 현재 가치 총합 계산 (갯수 * 가장 높았던 가격)
+                total_coin_value = sum(pos['amount'] * pos['highest_price'] for holding_sym, pos in positions.items())
+                total_portfolio_value = krw_avail + total_coin_value
+                
+                # 목표 투자금액 = (가용현금 + 코인총합) / 최대보유슬롯
+                # 즉, 자산이 늘든 줄든 항상 N빵하여 일정한 비율(비중)로 베팅.
+                target_allocation = total_portfolio_value / config.max_positions
+                
+                # 가용 현금을 초과해서 살 수는 없으므로 실제 남은 현금 한도까지만 허용
+                allocate_amount = min(target_allocation, krw_avail)
                 
                 # 수수료/슬리피지 대비 1% 자체를 빼버려서 극단적으로 안전한 금액만 주문 (잔액 부족 에러 원천 차단)
                 allocate_amount = int(allocate_amount * 0.99)
