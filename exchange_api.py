@@ -106,10 +106,24 @@ class CoinoneAPI:
             current_price = self.fetch_current_price(symbol)
             if not current_price: continue
 
+            # Apply a 1.5% aggressive buffer to ensure instant market sweep
+            if side == 'BUY':
+                raw_target_price = current_price * 1.015
+            else:
+                raw_target_price = current_price * 0.985
+                
+            # Truncate price to acceptable exchange ticks to prevent Parameter Error
+            try:
+                target_price = float(self.exchange.price_to_precision(symbol, raw_target_price))
+            except:
+                target_price = float(raw_target_price)
+
             # Determine order dimensions
             if side == 'BUY':
                 if remaining_krw <= 0: break
-                amount = remaining_krw / current_price
+                # Calculate amount using the *aggressive* target_price so we don't accidentally ask for more 
+                # coins than our KRW budget can cover at the worst-case slippage price.
+                amount = remaining_krw / target_price
             else:
                 if remaining_coin <= 0: break
                 amount = remaining_coin
@@ -127,7 +141,7 @@ class CoinoneAPI:
 
             request_params = {
                 'currency': base,
-                'price': float(current_price),
+                'price': float(target_price),
                 'qty': qty_formatted
             }
             
