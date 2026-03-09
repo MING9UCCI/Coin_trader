@@ -5,7 +5,7 @@ from rich.console import Console
 from rich.panel import Panel
 from config import config
 from logger import logger
-from exchange_api import ExchangeAPI
+from exchange_api import get_exchange_api
 from ai_advisor import AIAdvisor
 from strategy_vbd import StrategyVBD
 from database import record_trade
@@ -30,7 +30,7 @@ def sync_positions(exchange_api, strategy):
         top_coins = strategy.get_top_volume_coins(limit=config.coin_count)
         
         for symbol in top_coins:
-            base_ticker = symbol.split('/')[0]
+            base_ticker = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[1]
             # Safely get the free amount for the ticker
             free_amount = float(balances.get('free', {}).get(base_ticker, 0.0))
             if free_amount <= 0:
@@ -87,8 +87,8 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
                     logger.info(f"[{symbol}] STOP Triggered! Selling at {current_price:,} KRW (Buy: {buy_price:,}). PNL: {profit_pct:.2f}%")
                     
                     # Execute Sell
-                    coin_ticker = symbol.split('/')[0]
-                    amount_to_sell = exchange_api.fetch_balance(coin_ticker) if not config.dry_run else pos.get('amount', 0)
+                    base_ticker = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[1]
+                    amount_to_sell = exchange_api.fetch_balance(base_ticker) if not config.dry_run else pos.get('amount', 0)
                     order_result = exchange_api.place_market_sell_order(symbol, amount_to_sell)
                     
                     # 1. 찌꺼기 방지: 매도 주문이 '성공적으로' 체결되었을 때만 메모리에서 삭제
@@ -105,8 +105,8 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
                     profit_pct = ((current_price - buy_price) / buy_price) * 100
                     logger.info(f"[{symbol}] ⏰ TIME-STOP Triggered! Held over 12 hours. Selling at {current_price:,} KRW. PNL: {profit_pct:.2f}%")
                     
-                    coin_ticker = symbol.split('/')[0]
-                    amount_to_sell = exchange_api.fetch_balance(coin_ticker) if not config.dry_run else pos.get('amount', 0)
+                    base_ticker = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[1]
+                    amount_to_sell = exchange_api.fetch_balance(base_ticker) if not config.dry_run else pos.get('amount', 0)
                     order_result = exchange_api.place_market_sell_order(symbol, amount_to_sell)
                     
                     if order_result:
@@ -231,10 +231,10 @@ def main():
     
     console.print(Panel(welcome_msg, title="[bold magenta]Initialization[/bold magenta]", expand=False))
     
-    logger.info("Starting up engine and connecting to APIs...")
+    logger.info(f"Starting Engine with Active Exchange: {config.active_exchange}")
     
     try:
-        exchange_api = ExchangeAPI()
+        exchange_api = get_exchange_api()
         ai_advisor = AIAdvisor()
         strategy = StrategyVBD(k_value=config.vbd_k)
         config.validate()

@@ -1,11 +1,12 @@
 import ccxt
+import pyupbit
 import math
 import time
 import pandas as pd
 from config import config
 from logger import logger
 
-class ExchangeAPI:
+class CoinoneAPI:
     def __init__(self):
         """Initializes the ccxt Coinone object with credentials if available."""
         exchange_class = getattr(ccxt, 'coinone')
@@ -223,3 +224,115 @@ class ExchangeAPI:
              return {"result": "dust_cleared", "filled_price": current_price}
 
         return self._wait_and_fill_limit_order(symbol, 'SELL', coin_budget=safe_amount)
+
+class UpbitAPI:
+    def __init__(self):
+        self.upbit = pyupbit.Upbit(config.upbit_access_key, config.upbit_secret_key)
+        logger.info("Initialized Upbit API connection (pyupbit).")
+
+    def format_symbol(self, symbol):
+        """Converts CCXT BTC/KRW or KRW-BTC into pyupbit format KRW-BTC"""
+        if '/' in symbol:
+            base, quote = symbol.split('/')
+            return f"{quote}-{base}"
+        return symbol
+
+    def fetch_balance(self, ticker="KRW"):
+        if config.dry_run:
+            return 100000.0 if ticker == "KRW" else 0.0
+        try:
+            # get_balances returns a list of dictionaries like {'currency': 'KRW', 'balance': '100000.0', ...}
+            raw_balances = self.upbit.get_balances()
+            if raw_balances:
+                for b in raw_balances:
+                    if b['currency'] == ticker:
+                        return float(b['balance'])
+            return 0.0
+        except Exception as e:
+            logger.error(f"Error fetching balance for {ticker}: {e}")
+            return 0.0
+
+    def fetch_current_price(self, symbol):
+        try:
+            formatted_sym = self.format_symbol(symbol)
+            return pyupbit.get_current_price(formatted_sym)
+        except Exception as e:
+            logger.error(f"Error fetching price for {symbol}: {e}")
+            return None
+
+    def fetch_ohlcv(self, symbol, timeframe='1d', limit=2):
+        try:
+            formatted_sym = self.format_symbol(symbol)
+            interval_map = {'day': 'day', '1d': 'day', '1h': 'minute60', '15m': 'minute15', '4h': 'minute240'}
+            interval = interval_map.get(timeframe, 'day')
+            df = pyupbit.get_ohlcv(formatted_sym, interval=interval, count=limit)
+            if df is not None and not df.empty:
+                df.reset_index(inplace=True)
+                df.rename(columns={'index': 'timestamp'}, inplace=True)
+                return df
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching OHLCV for {symbol}: {e}")
+            return None
+
+    def place_market_buy_order(self, symbol, cost_krw):
+        if config.dry_run:
+            logger.info(f"[DRY RUN] Simulated Upbit Market Buy for {symbol} with {cost_krw} KRW")
+            return {"uuid": f"dry-run-buy-{time.time()}"}
+            
+        try:
+            # 강제로 5천원 미만이면 거부
+            if cost_krw < 5000:
+                logger.warning(f"[{symbol}] Buy order cost ({cost_krw}) under Upbit minimum 5000 KRW.")
+                return None
+                
+            formatted_sym = self.format_symbol(symbol)
+            # 업비트는 buy_market_order 지원
+            res = self.upbit.buy_market_order(formatted_sym, cost_krw)
+            if res and 'uuid' in res:
+                logger.info(f"[{symbol}] Upbit Market BUY Placed. (ID: {res['uuid']})")
+                return {"result": "success", "orderId": res['uuid'], "filled_price": self.fetch_current_price(symbol)}
+            elif 'error' in res:
+                logger.error(f"[{symbol}] Upbit Market BUY Error: {res}")
+                return None
+            else:
+                logger.error(f"[{symbol}] Upbit Market BUY Failed: {res}")
+                return None
+        except Exception as e:
+            logger.error(f"[{symbol}] Upbit BUY Exception: {e}")
+            return None
+
+    def place_market_sell_order(self, symbol, amount):
+        if config.dry_run:
+            logger.info(f"[DRY RUN] Simulated Upbit Market Sell for {symbol} of amount {amount}")
+            return {"uuid": f"dry-run-sell-{time.time()}"}
+            
+        try:
+            base_ticker = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[1]
+            actual_balance = self.fetch_balance(base_ticker)
+            safe_amount = min(amount, actual_balance)
+            current_price = self.fetch_current_price(symbol)
+            
+            # 5천원 미만 잔고면 먼지로 판별하고 청산. 업비트는 시장가 매도 최소 5000원 룰이 있음.
+            if current_price and (safe_amount * current_price) < 4800:
+                logger.warning(f"[{symbol}] Balance ({safe_amount} 개) is below Upbit minimum sell size. Clearing dust from memory.")
+                return {"result": "dust_cleared", "filled_price": current_price}
+                
+            formatted_sym = self.format_symbol(symbol)
+            res = self.upbit.sell_market_order(formatted_sym, safe_amount)
+            if res and 'uuid' in res:
+                logger.info(f"[{symbol}] Upbit Market SELL Placed. (ID: {res['uuid']})")
+                return {"result": "success", "orderId": res['uuid'], "filled_price": current_price}
+            else:
+                logger.error(f"[{symbol}] Upbit Market SELL Failed: {res}")
+                return None
+        except Exception as e:
+            logger.error(f"[{symbol}] Upbit SELL Exception: {e}")
+            return None
+
+
+def get_exchange_api():
+    if config.active_exchange == "UPBIT":
+        return UpbitAPI()
+    else:
+        return CoinoneAPI()

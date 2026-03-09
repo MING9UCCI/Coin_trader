@@ -7,8 +7,15 @@ load_dotenv()
 
 class Config:
     def __init__(self):
+        self.active_exchange = os.getenv("ACTIVE_EXCHANGE", "UPBIT").upper()
+        
+        # Coinone API
         self.access_key = os.getenv("COINONE_ACCESS_KEY", "")
         self.secret_key = os.getenv("COINONE_SECRET_KEY", "")
+        
+        # Upbit API (Priority Default)
+        self.upbit_access_key = os.getenv("UPBIT_ACCESS_KEY", "")
+        self.upbit_secret_key = os.getenv("UPBIT_SECRET_KEY", "")
         
         # New: Gemini API
         self.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
@@ -36,8 +43,14 @@ class Config:
 
     def validate(self):
         """Check if essential API keys are provided when not in dry run."""
-        if not self.dry_run and (not self.access_key or not self.secret_key):
-            raise ValueError("COINONE_ACCESS_KEY and COINONE_SECRET_KEY must be set in .env when DRY_RUN is False.")
+        if not self.dry_run:
+            if self.active_exchange == "UPBIT":
+                if not self.upbit_access_key or not self.upbit_secret_key:
+                    raise ValueError("UPBIT_ACCESS_KEY and UPBIT_SECRET_KEY must be set in .env when ACTIVE_EXCHANGE is UPBIT and DRY_RUN is False.")
+            else:
+                if not self.access_key or not self.secret_key:
+                    raise ValueError("COINONE_ACCESS_KEY and COINONE_SECRET_KEY must be set in .env when ACTIVE_EXCHANGE is COINONE and DRY_RUN is False.")
+
         if not self.gemini_api_key:
              logging.warning("GEMINI_API_KEY is not set. AI Advisor will default to 'Confirm' fallback.")
 
