@@ -88,6 +88,35 @@ class CoinoneAPI:
             logger.error(f"Error fetching OHLCV for {symbol}: {e}")
             return None
 
+    def _round_to_tick(self, price: float) -> float:
+        """
+        Rounds the price down to the nearest valid Coinone KRW tick size.
+        This fixes Error 310: 'Unavailable price unit' when using slippage.
+        """
+        if price < 1:
+            tick = 0.0001
+        elif price < 10:
+            tick = 0.001
+        elif price < 100:
+            tick = 0.01
+        elif price < 1000:
+            tick = 0.1
+        elif price < 10000:
+            tick = 1.0
+        elif price < 100000:
+            tick = 10.0
+        elif price < 500000:
+            tick = 50.0
+        elif price < 1000000:
+            tick = 100.0
+        elif price < 2000000:
+            tick = 500.0
+        else:
+            tick = 1000.0
+            
+        # Format explicitly to drop floating point noise
+        return float(format(math.floor(price / tick) * tick, '.4f'))
+
     def _wait_and_fill_limit_order(self, symbol: str, side: str, krw_budget=None, coin_budget=None, max_retries=5):
         """
         Auto-chasing limit order to spoof a market fill.
@@ -113,9 +142,11 @@ class CoinoneAPI:
                 raw_target_price = current_price * 0.985
                 
             # Truncate price to acceptable exchange ticks to prevent Parameter Error
+            # Default CCXT often fails Coinone's dynamic tick, so we use our native rounder.
             try:
-                target_price = float(self.exchange.price_to_precision(symbol, raw_target_price))
-            except:
+                target_price = self._round_to_tick(raw_target_price)
+            except Exception as e:
+                logger.error(f"Error rounding tick size for {symbol}: {e}")
                 target_price = float(raw_target_price)
 
             # Determine order dimensions
