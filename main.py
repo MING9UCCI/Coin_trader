@@ -8,7 +8,7 @@ from logger import logger
 from exchange_api import get_exchange_api
 from ai_advisor import AIAdvisor
 from strategy_vbd import StrategyVBD
-from database import record_trade
+from database import record_trade, save_open_positions, load_open_positions
 from auto_optimizer import run_optimizer
 from market_filter import MarketFilter
 
@@ -23,30 +23,47 @@ def get_current_real_balance(exchange_api, ticker="KRW"):
     return exchange_api.fetch_balance(ticker)
 
 def sync_positions(exchange_api, strategy):
-    logger.info("Syncing existing portfolio balances into bot memory...")
+    """Syncs existing portfolio balances into bot memory.
+    V4: First loads saved positions (with real entry prices). 
+    Then detects any NEW coins on the exchange not in saved data."""
+    global positions
+    
+    # 1단계: 영구 저장된 포지션 먼저 로드 (실제 매수가 보존)
+    saved = load_open_positions()
+    if saved:
+        positions.update(saved)
+        logger.info(f"Loaded {len(saved)} saved positions from open_positions.json")
+        for sym, pos in saved.items():
+            logger.info(f"  Restored: [{sym}] (Buy Price: {pos.get('buy_price', 'N/A'):,}, Amount: {pos.get('amount', 0):.4f})")
+    
+    # 2단계: 거래소에 있지만 저장 파일에 없는 '미추적' 코인 감지
+    logger.info("Scanning exchange for any untracked positions...")
     try:
-        # ccxt fetch_balance returns all balances mapped
         balances = exchange_api.exchange.fetch_balance()
         top_coins = strategy.get_top_volume_coins(limit=config.coin_count)
         
         for symbol in top_coins:
+            if symbol in positions:
+                continue  # 이미 로드된 포지션은 건드리지 않음
+            
             base_ticker = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[1]
-            # Safely get the free amount for the ticker
             free_amount = float(balances.get('free', {}).get(base_ticker, 0.0))
             if free_amount <= 0:
-                # Fallback to total if free isn't specified but total is
                 free_amount = float(balances.get('total', {}).get(base_ticker, 0.0))
                 
             if free_amount > 0:
                 current_price = exchange_api.fetch_current_price(symbol)
                 if current_price and (free_amount * current_price) > 5000:
                     positions[symbol] = {
-                        'buy_price': current_price,
+                        'buy_price': current_price,  # 실제 매수가를 모르므로 현재가로 대체 (차선책)
                         'highest_price': current_price,
                         'amount': free_amount,
-                        'buy_time': time.time() # 1. 시간 초과 체크를 위해 현재 시간 등록
+                        'buy_time': time.time()
                     }
-                    logger.info(f"Synced existing position: [{symbol}] (Amount: {free_amount:.4f}, Checkpoint Price: {current_price:,})")
+                    logger.warning(f"Detected untracked position: [{symbol}] (Amount: {free_amount:.4f}, Using current price as buy_price: {current_price:,})")
+        
+        # 최종 상태를 영구 저장
+        save_open_positions(positions)
 
     except Exception as e:
         logger.error(f"Failed to sync positions: {e}")
@@ -54,172 +71,206 @@ def sync_positions(exchange_api, strategy):
 def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
     logger.info("--- Starting VBD + AI Scan Cycle ---")
     
-    # 1. Update Top Volume Coins
+    # 1. Update Top Volume Coins (sorted by 24h volume descending)
     top_coins = strategy.get_top_volume_coins(limit=config.coin_count)
     
-    # Check current prices for Trailing Stop logic and VBD breakout
-    for symbol in top_coins:
+    # ===================================================================
+    # PHASE A: 기존 포지션 관리 (손절/익절/타임스탑)
+    # 모든 보유 코인을 먼저 순회하며 매도 조건을 체크합니다.
+    # ===================================================================
+    for symbol in list(positions.keys()):
         try:
             current_price = exchange_api.fetch_current_price(symbol)
             if not current_price:
                 continue
 
-            # a) Trailing Stop Check (If holding symbol)
-            if symbol in positions:
-                pos = positions[symbol]
-                buy_price = pos['buy_price']
-                highest_price = max(pos['highest_price'], current_price)
-                positions[symbol]['highest_price'] = highest_price
-                
-                # Trailing stop condition: Drop by trailing_stop_pct (e.g. 3%) from peak
-                drop_threshold = highest_price * (1.0 - config.trailing_stop_pct)
-                
-                # [Tier 2 Macro Filter]: If Panic mode, sell immediately
-                if market_filter.news_panic_flag:
-                    logger.critical(f"🚨 [{symbol}] PANIC SELL TRIGGERED BY GLOBAL NEWS! Liquidating position.")
-                    drop_threshold = current_price + 99999999 # Force trigger sell
-                
-                # NEW: Hard Stop Loss at -3% from entry to prevent sliding failures
-                hard_stop = buy_price * 0.97
-                
-                if current_price <= drop_threshold or current_price <= hard_stop:
-                    profit_pct = ((current_price - buy_price) / buy_price) * 100
-                    logger.info(f"[{symbol}] STOP Triggered! Selling at {current_price:,} KRW (Buy: {buy_price:,}). PNL: {profit_pct:.2f}%")
-                    
-                    # Execute Sell
-                    base_ticker = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[1]
-                    amount_to_sell = exchange_api.fetch_balance(base_ticker) if not config.dry_run else pos.get('amount', 0)
-                    order_result = exchange_api.place_market_sell_order(symbol, amount_to_sell)
-                    
-                    # 1. 찌꺼기 방지: 매도 주문이 '성공적으로' 체결되었을 때만 메모리에서 삭제
-                    if order_result:
-                        record_trade(symbol, buy_price, current_price, amount_to_sell)
-                        del positions[symbol]
-                        cooldowns[symbol] = time.time()
-                        logger.info(f"[{symbol}] Position cleared & Added to 3-hour cooldown.")
-                    else:
-                        logger.warning(f"[{symbol}] Sell order failed or partially filled. Keeping in memory to retry on next tick.")
-                
-                # 3. 좀비 포지션 정리 (Time-Stop): 12시간 보유하고도 트레일링 스탑을 못 쳤다면 청산 (기회비용 확보)
-                elif (time.time() - pos.get('buy_time', time.time())) > 43200: # 12 hours = 43200 sec
-                    profit_pct = ((current_price - buy_price) / buy_price) * 100
-                    logger.info(f"[{symbol}] ⏰ TIME-STOP Triggered! Held over 12 hours. Selling at {current_price:,} KRW. PNL: {profit_pct:.2f}%")
-                    
-                    base_ticker = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[1]
-                    amount_to_sell = exchange_api.fetch_balance(base_ticker) if not config.dry_run else pos.get('amount', 0)
-                    order_result = exchange_api.place_market_sell_order(symbol, amount_to_sell)
-                    
-                    if order_result:
-                        record_trade(symbol, buy_price, current_price, amount_to_sell)
-                        del positions[symbol]
-                        cooldowns[symbol] = time.time()
-                    else:
-                        logger.warning(f"[{symbol}] Time-stop sell order failed. Keeping in memory to retry on next tick.")
-
-                continue # Skip buying logic since we already hold it
-
-            # --- Filter: Check News Panic before Buying ---
+            pos = positions[symbol]
+            buy_price = pos['buy_price']
+            highest_price = max(pos['highest_price'], current_price)
+            positions[symbol]['highest_price'] = highest_price
+            
+            # Trailing stop condition
+            drop_threshold = highest_price * (1.0 - config.trailing_stop_pct)
+            
+            # [Tier 2 Macro Filter]: If Panic mode, sell immediately
             if market_filter.news_panic_flag:
-                # Skipping new buys
-                continue
+                logger.critical(f"🚨 [{symbol}] PANIC SELL TRIGGERED BY GLOBAL NEWS! Liquidating position.")
+                drop_threshold = current_price + 99999999
 
-            # NEW: Check Cooldown (Block re-entry for 3 hours)
+            # Hard Stop Loss at -3% from entry
+            hard_stop = buy_price * 0.97
+            
+            if current_price <= drop_threshold or current_price <= hard_stop:
+                profit_pct = ((current_price - buy_price) / buy_price) * 100
+                logger.info(f"[{symbol}] STOP Triggered! Selling at {current_price:,} KRW (Buy: {buy_price:,}). PNL: {profit_pct:.2f}%")
+                
+                base_ticker = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[1]
+                amount_to_sell = exchange_api.fetch_balance(base_ticker) if not config.dry_run else pos.get('amount', 0)
+                order_result = exchange_api.place_market_sell_order(symbol, amount_to_sell)
+                
+                if order_result:
+                    record_trade(symbol, buy_price, current_price, amount_to_sell)
+                    del positions[symbol]
+                    cooldowns[symbol] = time.time()
+                    logger.info(f"[{symbol}] Position cleared & Added to 3-hour cooldown.")
+                    save_open_positions(positions) # 영구 저장
+                else:
+                    logger.warning(f"[{symbol}] Sell order failed or partially filled. Keeping in memory to retry on next tick.")
+            
+            # Time-Stop: 12시간 보유 초과 시 청산
+            elif (time.time() - pos.get('buy_time', time.time())) > 43200:
+                profit_pct = ((current_price - buy_price) / buy_price) * 100
+                logger.info(f"[{symbol}] ⏰ TIME-STOP Triggered! Held over 12 hours. Selling at {current_price:,} KRW. PNL: {profit_pct:.2f}%")
+                
+                base_ticker = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[1]
+                amount_to_sell = exchange_api.fetch_balance(base_ticker) if not config.dry_run else pos.get('amount', 0)
+                order_result = exchange_api.place_market_sell_order(symbol, amount_to_sell)
+                
+                if order_result:
+                    record_trade(symbol, buy_price, current_price, amount_to_sell)
+                    del positions[symbol]
+                    cooldowns[symbol] = time.time()
+                    save_open_positions(positions)
+                else:
+                    logger.warning(f"[{symbol}] Time-stop sell order failed. Keeping in memory to retry on next tick.")
+
+        except Exception as e:
+            logger.error(f"Error managing position for {symbol}: {e}")
+
+    # ===================================================================
+    # PHASE B: 하락장 방어 모드 (Fear & Greed 3단계 필터)
+    # 극단적 공포장에서는 신규 매수를 100% 차단하여 현금 보유.
+    # ===================================================================
+    fg_score = market_filter.fear_greed_score
+    
+    if fg_score <= 20:
+        logger.info(f"🔴 [Cash Mode] Fear & Greed = {fg_score}. Extreme Fear detected. ALL new buys BLOCKED. Preserving cash.")
+        logger.info("--- Scan Cycle Complete ---")
+        return
+    
+    # 방어 모드: 슬롯 수와 예산 제한 축소
+    if fg_score <= 40:
+        effective_max_positions = min(config.max_positions, 3)
+        max_alloc_cap = 30000
+        logger.info(f"🟡 [Defensive Mode] Fear & Greed = {fg_score}. Max positions reduced to {effective_max_positions}, cap per coin: {max_alloc_cap:,} KRW.")
+    else:
+        effective_max_positions = config.max_positions
+        max_alloc_cap = 300000
+
+    # ===================================================================
+    # PHASE C: 돌파 후보 수집 (매수 즉시 실행 X, 리스트에 모으기)
+    # 모든 코인을 스캔한 후 거래량 순위가 높은 순서대로 매수.
+    # ===================================================================
+    breakout_candidates = []  # (rank_index, symbol, current_price, target_price) 튜플 리스트
+    
+    for idx, symbol in enumerate(top_coins):
+        try:
+            # 이미 보유 중이면 스킵
+            if symbol in positions:
+                continue
+            
+            # 뉴스 패닉이면 신규 매수 스킵
+            if market_filter.news_panic_flag:
+                continue
+            
+            # 쿨다운 체크
             if symbol in cooldowns:
                 elapsed = time.time() - cooldowns[symbol]
                 if elapsed < 10800:
                     continue
                 else:
                     del cooldowns[symbol]
-
-            # b) Breakout Check (If NOT holding symbol)
-            # Find the breakout target price
-            # Get 15m OHLCV from the previous 15-minute candle
+            
+            current_price = exchange_api.fetch_current_price(symbol)
+            if not current_price:
+                continue
+            
+            # VBD 15m 돌파 체크
             df_15m = exchange_api.fetch_ohlcv(symbol, timeframe='15m', limit=2)
             if df_15m is None or len(df_15m) < 2:
                 continue
-
+            
             target_price = strategy.get_breakout_target(df_15m)
             
             if target_price and current_price >= target_price:
-                # [Tier 3 Macro Filter]: 비트코인 단기 폭락(Dumping) 중이면 진입 금지
+                # BTC Dumping 체크
                 if market_filter.check_btc_trend() == "DUMPING":
                     logger.warning(f"[{symbol}] Buy cancelled due to BTC 4H Dumping Trend.")
                     continue
-                    
-                # 1단계: 돈이 충분한지 (최소 5,500원) 미리 검사해서 AI 호출 낭비 방지
-                krw_avail = get_current_real_balance(exchange_api, "KRW")
-                if krw_avail is None: krw_avail = 0
                 
-                if len(positions) >= config.max_positions:
-                    logger.info(f"[{symbol}] Maximum coin count ({config.max_positions}) reached. Can't buy more.")
+                # 후보 리스트에 추가 (rank = index in volume-sorted list, lower = better)
+                breakout_candidates.append((idx, symbol, current_price, target_price))
+                logger.info(f"[{symbol}] Breakout Candidate! Price {current_price:,} >= Target {target_price:,} (Volume Rank: #{idx+1})")
+        
+        except Exception as e:
+            logger.error(f"Error scanning symbol {symbol}: {e}")
+    
+    # ===================================================================
+    # PHASE D: 우선순위 매수 실행 (거래량 상위 코인부터 균등 배분)
+    # ===================================================================
+    if not breakout_candidates:
+        logger.info("--- Scan Cycle Complete (No breakout candidates) ---")
+        return
+    
+    # 거래량 순위가 높은(= rank_index가 낮은) 순서로 정렬
+    breakout_candidates.sort(key=lambda x: x[0])
+    logger.info(f"📊 {len(breakout_candidates)} breakout candidates found. Processing by volume rank priority...")
+    
+    for rank_index, symbol, current_price, target_price in breakout_candidates:
+        try:
+            # 슬롯 체크
+            remaining_slots = effective_max_positions - len(positions)
+            if remaining_slots <= 0:
+                logger.info(f"[{symbol}] Maximum coin count ({effective_max_positions}) reached. Stopping buy loop.")
+                break
+            
+            # 균등 배분: 현재 가용 현금 / 남은 빈 슬롯 수
+            krw_avail = get_current_real_balance(exchange_api, "KRW")
+            if krw_avail is None or krw_avail < 5500:
+                logger.info(f"[{symbol}] Skipped: Insufficient KRW ({krw_avail:,.0f}). Cannot proceed.")
+                break
+            
+            allocate_amount = int((krw_avail / remaining_slots) * 0.99)  # 1% 수수료 안전마진
+            
+            # 방어모드/정상모드 캡 적용
+            if allocate_amount > max_alloc_cap:
+                allocate_amount = max_alloc_cap
+                logger.info(f"[{symbol}] Allocation capped at {max_alloc_cap:,} KRW (F&G: {fg_score}).")
+            
+            # 최소 주문 금액 보정
+            if allocate_amount < 5500:
+                if krw_avail >= 5500:
+                    allocate_amount = max(5500, int(krw_avail * 0.99))
+                    logger.info(f"[{symbol}] Budget per slot too low. Adjusted to: {allocate_amount:,.0f} KRW")
+                else:
+                    logger.info(f"[{symbol}] Skipped: KRW ({krw_avail:,.0f}) below 5,500 minimum.")
                     continue
+            
+            # AI 필터링
+            rsi = strategy.get_rsi(symbol)
+            approved, context = ai_advisor.analyze_breakout(symbol, current_price, target_price, config.vbd_k, rank_index + 1, rsi)
+            
+            if approved:
+                logger.info(f"[{symbol}] AI Approved (Rank #{rank_index+1}): {context[-50:]}")
+                logger.info(f"[{symbol}] Buying with Equal Allocation: {allocate_amount:,.0f} KRW")
+                order = exchange_api.place_market_buy_order(symbol, allocate_amount)
+                
+                if order:
+                    bought_amount = (allocate_amount * 0.9995) / current_price if config.dry_run else allocate_amount / current_price
                     
-                # 1단계 (개선건): 빈 슬롯에 몰빵되는 것을 막기 위해 '총 자산(Total Portfolio)' 기준으로 균등 할당
-                # 보유 중인 코인들의 대략적인 현재 가치 총합 계산 (갯수 * 가장 높았던 가격)
-                total_coin_value = sum(pos['amount'] * pos['highest_price'] for holding_sym, pos in positions.items())
-                total_portfolio_value = krw_avail + total_coin_value
-                
-                # 목표 투자금액 = (가용현금 + 코인총합) / 최대보유슬롯
-                # 즉, 자산이 늘든 줄든 항상 N빵하여 일정한 비율(비중)로 베팅.
-                target_allocation = total_portfolio_value / config.max_positions
-                
-                # 가용 현금을 초과해서 살 수는 없으므로 실제 남은 현금 한도까지만 허용
-                allocate_amount = min(target_allocation, krw_avail)
-                
-                # 수수료/슬리피지 대비 1% 자체를 빼버려서 극단적으로 안전한 금액만 주문 (잔액 부족 에러 원천 차단)
-                allocate_amount = int(allocate_amount * 0.99)
-                
-                # 2. 복리리스크 방지 및 공포/탐욕 캡 적용 (Tier 1 필터 적용)
-                if market_filter.fear_greed_score <= 30:
-                    MAX_ALLOCATION_PER_COIN = 50000
-                    # Log only occasionally or simply reduce silently since it loops 15 times
-                else:
-                    MAX_ALLOCATION_PER_COIN = 300000
-                    
-                if allocate_amount > MAX_ALLOCATION_PER_COIN:
-                    allocate_amount = MAX_ALLOCATION_PER_COIN
-                    logger.info(f"[{symbol}] Allocation capped at {MAX_ALLOCATION_PER_COIN:,} KRW (F&G Score: {market_filter.fear_greed_score}).")
-                
-                # 강제로 최소 주문 금액(5,500원) 이상으로 보정 (수수료 포함 안전빵)
-                if allocate_amount < 5500:
-                    if krw_avail >= 5500:
-                        allocate_amount = int(krw_avail * 0.99) 
-                        if allocate_amount < 5500: 
-                            allocate_amount = 5500 # 혹시나 5500원 딱코면 다시 복구
-                        logger.info(f"[{symbol}] Budget per slot too low. Adjusting allocation to available KRW: {allocate_amount:,.0f}")
-                    else:
-                        logger.info(f"[{symbol}] Skipped: Total KRW ({krw_avail:,.0f}) is under absolute minimum 5,500 KRW. Cannot proceed.")
-                        continue
-                
-                logger.info(f"[{symbol}] Breakout Detected! Price {current_price:,} >= Target {target_price:,}")
-                
-                # 2단계: 돈이 확인되었으므로 AI 필터링 시작
-                rsi = strategy.get_rsi(symbol)
-                rank_index = top_coins.index(symbol) + 1
-                
-                approved, context = ai_advisor.analyze_breakout(symbol, current_price, target_price, config.vbd_k, rank_index, rsi)
-                
-                if approved:
-                    logger.info(f"[{symbol}] AI Appoved: {context[-50:]}")
-                    
-                    logger.info(f"[{symbol}] Attemping to BUY with Dynamic Allocation: {allocate_amount:,.0f} KRW")
-                    order = exchange_api.place_market_buy_order(symbol, allocate_amount)
-                    
-                    if order:
-                        bought_amount = (allocate_amount * 0.9995) / current_price if config.dry_run else allocate_amount / current_price 
-                        
-                        positions[symbol] = {
-                            'buy_price': current_price,
-                            'highest_price': current_price,
-                            'amount': bought_amount,
-                            'buy_time': time.time()
-                        }
-                        logger.info(f"[{symbol}] Position Opened successfully.")
-                else:
-                    logger.info(f"[{symbol}] AI VETOED Trade: {context[-50:]}")
+                    positions[symbol] = {
+                        'buy_price': current_price,
+                        'highest_price': current_price,
+                        'amount': bought_amount,
+                        'buy_time': time.time()
+                    }
+                    logger.info(f"[{symbol}] Position Opened successfully.")
+                    save_open_positions(positions) # 영구 저장
+            else:
+                logger.info(f"[{symbol}] AI VETOED Trade (Rank #{rank_index+1}): {context[-50:]}")
 
         except Exception as e:
-            logger.error(f"Error processing symbol {symbol}: {e}")
+            logger.error(f"Error processing buy for {symbol}: {e}")
 
     logger.info("--- Scan Cycle Complete ---")
 
