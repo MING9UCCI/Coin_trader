@@ -28,23 +28,35 @@ def sync_positions(exchange_api, strategy):
     Then detects any NEW coins on the exchange not in saved data."""
     global positions
     
-    # 1단계: 영구 저장된 포지션 먼저 로드 (실제 매수가 보존)
+    # 1단계: 영구 저장된 포지션 로드
     saved = load_open_positions()
     if saved:
         positions.update(saved)
-        logger.info(f"Loaded {len(saved)} saved positions from open_positions.json")
-        for sym, pos in saved.items():
-            logger.info(f"  Restored: [{sym}] (Buy Price: {pos.get('buy_price', 'N/A'):,}, Amount: {pos.get('amount', 0):.4f})")
     
-    # 2단계: 거래소에 있지만 저장 파일에 없는 '미추적' 코인 감지
-    logger.info("Scanning exchange for any untracked positions...")
+    # 2단계: 거래소 실제 잔고와 크로스체크 (수동 매도 감지 및 미추적 코인 등록)
+    logger.info("Syncing positions with actual exchange balances...")
     try:
         balances = exchange_api.exchange.fetch_balance()
-        top_coins = strategy.get_top_volume_coins(limit=config.coin_count)
         
+        # A. 저장된 포지션 중 수동으로 팔아서 없어진 코인 제거
+        for sym in list(positions.keys()):
+            base_ticker = sym.split('/')[0] if '/' in sym else sym.split('-')[1]
+            free_amount = float(balances.get('free', {}).get(base_ticker, 0.0))
+            if free_amount <= 0:
+                free_amount = float(balances.get('total', {}).get(base_ticker, 0.0))
+                
+            current_price = exchange_api.fetch_current_price(sym)
+            if not current_price or (free_amount * current_price) < 5000:
+                logger.info(f"  [Sync] Removed [{sym}] from tracking (Manually sold or dust).")
+                del positions[sym]
+            else:
+                logger.info(f"  [Sync] Restored [{sym}] (Buy Price: {positions[sym]['buy_price']:,})")
+        
+        # B. 거래소에는 있는데 추적 리스트에 없는 신규 코인 추가
+        top_coins = strategy.get_top_volume_coins(limit=config.coin_count)
         for symbol in top_coins:
             if symbol in positions:
-                continue  # 이미 로드된 포지션은 건드리지 않음
+                continue
             
             base_ticker = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[1]
             free_amount = float(balances.get('free', {}).get(base_ticker, 0.0))
@@ -55,12 +67,13 @@ def sync_positions(exchange_api, strategy):
                 current_price = exchange_api.fetch_current_price(symbol)
                 if current_price and (free_amount * current_price) > 5000:
                     positions[symbol] = {
-                        'buy_price': current_price,  # 실제 매수가를 모르므로 현재가로 대체 (차선책)
+                        'buy_price': current_price,
                         'highest_price': current_price,
                         'amount': free_amount,
                         'buy_time': time.time()
                     }
-                    logger.warning(f"Detected untracked position: [{symbol}] (Amount: {free_amount:.4f}, Using current price as buy_price: {current_price:,})")
+                    logger.warning(f"  [Sync] Detected untracked position: [{symbol}], Using current price.")
+
         
         # 최종 상태를 영구 저장
         save_open_positions(positions)
@@ -254,13 +267,12 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
         return
     
     breakout_candidates.sort(key=lambda x: x[0])
-    logger.info(f"📊 {len(breakout_candidates)} breakout candidates found. Processing by volume rank priority...")
+    logger.info(f"📊 {len(breakout_candidates)} candidates found. Processing buys...")
     
     for rank_index, symbol, current_price, target_price, rsi in breakout_candidates:
         try:
             remaining_slots = effective_max_positions - len(positions)
             if remaining_slots <= 0:
-                logger.info(f"[{symbol}] Maximum coin count ({effective_max_positions}) reached. Stopping buy loop.")
                 break
             
             # 균등 배분: (가용 현금 × 사용 비율) / 남은 빈 슬롯 수
@@ -347,14 +359,15 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
         
         for sym, pos in positions.items():
             cur = exchange_api.fetch_current_price(sym) or pos['buy_price']
-            pnl = ((cur - pos['buy_price']) / pos['buy_price']) * 100
-            pnl_color = "green" if pnl >= 0 else "red"
+            raw_pnl = ((cur - pos['buy_price']) / pos['buy_price']) * 100
+            net_pnl = raw_pnl - 0.4  # Coinone round-trip fee deduction (0.2% * 2)
+            pnl_color = "green" if net_pnl >= 0 else "red"
             held_hrs = (time.time() - pos.get('buy_time', time.time())) / 3600
             pos_table.add_row(
                 sym.split('/')[0],
                 f"{pos['buy_price']:,.0f}",
                 f"{cur:,.0f}",
-                f"[{pnl_color}]{pnl:+.2f}%[/{pnl_color}]",
+                f"[{pnl_color}]{net_pnl:+.2f}%[/{pnl_color}]",
                 f"{held_hrs:.1f}h"
             )
         
