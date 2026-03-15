@@ -158,13 +158,13 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
     # PHASE B: 하락장 방어 모드 (F&G 퍼센티지 기반 유동 스케일링)
     # F&G 점수를 0~100 비율로 변환하여 슬롯 수와 예산을 유동적으로 조절.
     # ===================================================================
-    if fg_score <= 15:
+    if fg_score <= 5:
         logger.info(f"🔴 [Cash Mode] Fear & Greed = {fg_score}. Extreme Fear detected. ALL new buys BLOCKED.")
         krw_now = get_current_real_balance(exchange_api, "KRW") or 0
         status_text = f"[bold cyan]Fear & Greed:[/bold cyan] [red]{fg_score} (🔴 CASH MODE)[/red]\n"
         status_text += f"[bold cyan]Slots:[/bold cyan] [white]{len(positions)}[/white] / [white]0 (blocked)[/white]\n"
         status_text += f"[bold cyan]KRW Balance:[/bold cyan] [green]{krw_now:,.0f}[/green] 원\n"
-        status_text += "[red bold]⛔ All new buys are BLOCKED until F&G recovers above 15.[/red bold]"
+        status_text += "[red bold]⛔ All new buys are BLOCKED until F&G recovers above 5.[/red bold]"
         console.print(Panel(status_text, title="[bold magenta]📊 Scan Cycle Complete[/bold magenta]", expand=False))
         return
     
