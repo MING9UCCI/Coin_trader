@@ -186,17 +186,28 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
     
     # 슬롯 수: max_positions의 fg_ratio% (최소 1, 최대 max_positions)
     effective_max_positions = max(1, int(config.max_positions * fg_ratio))
-    # 슬롯당 예산 캡: 기본 30만원에 fg_ratio를 곱함
-    max_alloc_cap = max(10000, int(300000 * fg_ratio))
-    
-    # === 현금 예비비 (Cash Reserve Ratio) ===
-    # DEFENSIVE: 가용 현금의 50%만 사용 (50% 예비)
-    # NORMAL: 가용 현금의 100% 사용
     if fg_score <= 40:
         cash_usage_ratio = 0.5
-        logger.info(f"🟡 [Defensive] F&G={fg_score} → {effective_max_positions} slots, cap {max_alloc_cap:,} KRW, cash usage {int(cash_usage_ratio*100)}% (reserve {int((1-cash_usage_ratio)*100)}%)")
     else:
         cash_usage_ratio = 1.0
+
+    # === [포트폴리오 기반 정적 할당 계산] ===
+    krw_avail = get_current_real_balance(exchange_api, "KRW") or 0
+    total_coin_value = 0
+    if positions:
+        for sym, pos in positions.items():
+            cur_p = exchange_api.fetch_current_price(sym) or pos['buy_price']
+            total_coin_value += cur_p * pos.get('amount', 0)
+            
+    total_portfolio = krw_avail + total_coin_value
+    
+    # 목표 투자액 (총 자산 * 사용 허용 비율)
+    target_investment_limit = total_portfolio * cash_usage_ratio
+    max_alloc_cap = int(target_investment_limit / effective_max_positions) if effective_max_positions > 0 else 0
+
+    if cash_usage_ratio < 1.0:
+        logger.info(f"🟡 [Defensive] F&G={fg_score} → {effective_max_positions} slots, cap {max_alloc_cap:,} KRW, cash usage {int(cash_usage_ratio*100)}% (reserve {int((1-cash_usage_ratio)*100)}%)")
+    else:
         logger.info(f"🟢 [Normal] F&G={fg_score} → {effective_max_positions} slots, cap {max_alloc_cap:,} KRW, cash usage 100%")
 
     # ===================================================================
@@ -275,28 +286,20 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
             if remaining_slots <= 0:
                 break
             
-            # 균등 배분: (가용 현금 × 사용 비율) / 남은 빈 슬롯 수
+            # 매수 전 가용 현금 재확인
             krw_avail = get_current_real_balance(exchange_api, "KRW")
             if krw_avail is None or krw_avail < 5500:
                 logger.info(f"[{symbol}] Skipped: Insufficient KRW ({krw_avail:,.0f}). Cannot proceed.")
                 break
             
-            usable_krw = krw_avail * cash_usage_ratio  # 예비 현금 제외
-            allocate_amount = int((usable_krw / remaining_slots) * 0.99)
-            
-            # 방어모드 캡 적용 (F&G 퍼센티지 스케일링)
-            if allocate_amount > max_alloc_cap:
-                allocate_amount = max_alloc_cap
-                logger.info(f"[{symbol}] Allocation capped at {max_alloc_cap:,} KRW (F&G: {fg_score}).")
+            # 포트폴리오 기반으로 사전 계산된 고정 할당량 사용
+            allocate_amount = min(max_alloc_cap, int(krw_avail * 0.99))
             
             # 최소 주문 금액 보정
             if allocate_amount < 5500:
-                if krw_avail >= 5500:
-                    allocate_amount = max(5500, int(krw_avail * 0.99))
-                    logger.info(f"[{symbol}] Budget per slot too low. Adjusted to: {allocate_amount:,.0f} KRW")
-                else:
-                    logger.info(f"[{symbol}] Skipped: KRW ({krw_avail:,.0f}) below 5,500 minimum.")
-                    continue
+                # 할당량이 거래소 최소 기준치(5500원) 미만이면 무리하게 남은 잔고를 끌어쓰지 않고 스킵 (예방적 예비비 초과 방지)
+                logger.info(f"[{symbol}] Skipped: Ideal allocation ({allocate_amount:,.0f}) is below exchange minimum (5500 KRW). Reserved.")
+                continue
             
             # AI 필터링
             approved, context = ai_advisor.analyze_breakout(symbol, current_price, target_price, config.vbd_k, rank_index + 1, rsi)
