@@ -159,7 +159,7 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
     # F&G 점수를 0~100 비율로 변환하여 슬롯 수와 예산을 유동적으로 조절.
     # ===================================================================
     if fg_score <= 5:
-        logger.info(f"🔴 [Cash Mode] Fear & Greed = {fg_score}. Extreme Fear detected. ALL new buys BLOCKED.")
+        logger.info(f"🔴 [Cash Mode] Fear & Greed = {fg_score}. ALL new buys BLOCKED.")
         krw_now = get_current_real_balance(exchange_api, "KRW") or 0
         status_text = f"[bold cyan]Fear & Greed:[/bold cyan] [red]{fg_score} (🔴 CASH MODE)[/red]\n"
         status_text += f"[bold cyan]Slots:[/bold cyan] [white]{len(positions)}[/white] / [white]0 (blocked)[/white]\n"
@@ -168,8 +168,7 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
         console.print(Panel(status_text, title="[bold magenta]📊 Scan Cycle Complete[/bold magenta]", expand=False))
         return
     
-    # F&G 비율 기반 유동 스케일링 (최소 50% 보장 — 공격적 세팅)
-    # fg_ratio: 최소 0.5 ~ 최대 1.0 (공포장에서도 절반 이상의 화력 유지)
+    # F&G 비율 기반 유동 스케일링 (최소 50% 보장)
     fg_ratio = max(0.5, min(fg_score / 100.0, 1.0))
     
     # 슬롯 수: max_positions의 fg_ratio% (최소 1, 최대 max_positions)
@@ -177,10 +176,15 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
     # 슬롯당 예산 캡: 기본 30만원에 fg_ratio를 곱함
     max_alloc_cap = max(10000, int(300000 * fg_ratio))
     
+    # === 현금 예비비 (Cash Reserve Ratio) ===
+    # DEFENSIVE: 가용 현금의 50%만 사용 (50% 예비)
+    # NORMAL: 가용 현금의 100% 사용
     if fg_score <= 40:
-        logger.info(f"🟡 [Defensive] F&G={fg_score} → {int(fg_ratio*100)}% capacity: {effective_max_positions} slots, cap {max_alloc_cap:,} KRW/coin")
+        cash_usage_ratio = 0.5
+        logger.info(f"🟡 [Defensive] F&G={fg_score} → {effective_max_positions} slots, cap {max_alloc_cap:,} KRW, cash usage {int(cash_usage_ratio*100)}% (reserve {int((1-cash_usage_ratio)*100)}%)")
     else:
-        logger.info(f"🟢 [Normal] F&G={fg_score} → {effective_max_positions} slots, cap {max_alloc_cap:,} KRW/coin")
+        cash_usage_ratio = 1.0
+        logger.info(f"🟢 [Normal] F&G={fg_score} → {effective_max_positions} slots, cap {max_alloc_cap:,} KRW, cash usage 100%")
 
     # ===================================================================
     # PHASE C: 돌파 후보 수집 (매수 즉시 실행 X, 리스트에 모으기)
@@ -241,9 +245,10 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
             fg_color, fg_mode = "yellow", "🟡 DEFENSIVE"
         else:
             fg_color, fg_mode = "green", "🟢 NORMAL"
+        reserve_pct = int((1 - cash_usage_ratio) * 100)
         status_text = f"[bold cyan]Fear & Greed:[/bold cyan] [{fg_color}]{fg_score} ({fg_mode})[/{fg_color}]\n"
         status_text += f"[bold cyan]Slots:[/bold cyan] [white]{len(positions)}[/white] / [white]{effective_max_positions}[/white]  |  [bold cyan]Cap/Coin:[/bold cyan] [white]{max_alloc_cap:,}[/white] KRW\n"
-        status_text += f"[bold cyan]KRW Balance:[/bold cyan] [green]{krw_now:,.0f}[/green] 원\n"
+        status_text += f"[bold cyan]KRW Balance:[/bold cyan] [green]{krw_now:,.0f}[/green] 원  |  [bold cyan]Reserve:[/bold cyan] [yellow]{reserve_pct}%[/yellow]\n"
         status_text += "[dim]No breakout candidates this cycle.[/dim]"
         console.print(Panel(status_text, title="[bold magenta]📊 Scan Cycle Complete[/bold magenta]", expand=False))
         return
@@ -258,13 +263,14 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
                 logger.info(f"[{symbol}] Maximum coin count ({effective_max_positions}) reached. Stopping buy loop.")
                 break
             
-            # 균등 배분: 현재 가용 현금 / 남은 빈 슬롯 수
+            # 균등 배분: (가용 현금 × 사용 비율) / 남은 빈 슬롯 수
             krw_avail = get_current_real_balance(exchange_api, "KRW")
             if krw_avail is None or krw_avail < 5500:
                 logger.info(f"[{symbol}] Skipped: Insufficient KRW ({krw_avail:,.0f}). Cannot proceed.")
                 break
             
-            allocate_amount = int((krw_avail / remaining_slots) * 0.99)
+            usable_krw = krw_avail * cash_usage_ratio  # 예비 현금 제외
+            allocate_amount = int((usable_krw / remaining_slots) * 0.99)
             
             # 방어모드 캡 적용 (F&G 퍼센티지 스케일링)
             if allocate_amount > max_alloc_cap:
@@ -311,7 +317,7 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
     from rich.table import Table
     
     # F&G 모드 색상 결정
-    if fg_score <= 15:
+    if fg_score <= 5:
         fg_color = "red"
         fg_mode = "🔴 CASH MODE"
     elif fg_score <= 40:
@@ -323,12 +329,13 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
     
     krw_now = get_current_real_balance(exchange_api, "KRW") or 0
     used_slots = len(positions)
+    reserve_pct = int((1 - cash_usage_ratio) * 100)
     
     # 포지션 테이블 생성
     status_lines = []
     status_lines.append(f"[bold cyan]Fear & Greed:[/bold cyan] [{fg_color}]{fg_score} ({fg_mode})[/{fg_color}]")
     status_lines.append(f"[bold cyan]Slots:[/bold cyan] [white]{used_slots}[/white] / [white]{effective_max_positions}[/white]  |  [bold cyan]Cap/Coin:[/bold cyan] [white]{max_alloc_cap:,}[/white] KRW")
-    status_lines.append(f"[bold cyan]KRW Balance:[/bold cyan] [green]{krw_now:,.0f}[/green] 원")
+    status_lines.append(f"[bold cyan]KRW Balance:[/bold cyan] [green]{krw_now:,.0f}[/green] 원  |  [bold cyan]Reserve:[/bold cyan] [yellow]{reserve_pct}%[/yellow]")
     
     if positions:
         pos_table = Table(show_header=True, header_style="bold magenta", expand=False, padding=(0, 1))
