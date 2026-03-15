@@ -95,27 +95,34 @@ class CoinoneAPI:
         """
         if price < 1:
             tick = 0.0001
+            decimals = 4
         elif price < 10:
             tick = 0.001
+            decimals = 3
         elif price < 100:
             tick = 0.01
+            decimals = 2
         elif price < 1000:
             tick = 0.1
-        elif price < 10000:
-            tick = 1.0
-        elif price < 100000:
-            tick = 10.0
-        elif price < 500000:
-            tick = 50.0
-        elif price < 1000000:
-            tick = 100.0
-        elif price < 2000000:
-            tick = 500.0
+            decimals = 1
         else:
-            tick = 1000.0
+            if price < 10000:
+                tick = 1.0
+            elif price < 100000:
+                tick = 10.0
+            elif price < 500000:
+                tick = 50.0
+            elif price < 1000000:
+                tick = 100.0
+            elif price < 2000000:
+                tick = 500.0
+            else:
+                tick = 1000.0
+            decimals = 0
             
-        # Format explicitly to drop floating point noise
-        return float(format(math.floor(price / tick) * tick, '.4f'))
+        # Format explicitly to drop floating point noise AND correctly round down
+        rounded_val = math.floor(price / tick) * tick
+        return float(round(rounded_val, decimals))
 
     def _amount_to_tick(self, amount: float) -> float:
         """
