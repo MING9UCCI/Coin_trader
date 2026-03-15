@@ -360,7 +360,7 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
         for sym, pos in positions.items():
             cur = exchange_api.fetch_current_price(sym) or pos['buy_price']
             raw_pnl = ((cur - pos['buy_price']) / pos['buy_price']) * 100
-            net_pnl = raw_pnl - 0.4  # Coinone round-trip fee deduction (0.2% * 2)
+            net_pnl = raw_pnl - 0.04  # Coinone Open API round-trip fee deduction (0.02% * 2)
             pnl_color = "green" if net_pnl >= 0 else "red"
             held_hrs = (time.time() - pos.get('buy_time', time.time())) / 3600
             pos_table.add_row(
