@@ -73,10 +73,11 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
     
     # 1. Update Top Volume Coins (sorted by 24h volume descending)
     top_coins = strategy.get_top_volume_coins(limit=config.coin_count)
+    fg_score = market_filter.fear_greed_score
     
     # ===================================================================
     # PHASE A: 기존 포지션 관리 (손절/익절/타임스탑)
-    # 모든 보유 코인을 먼저 순회하며 매도 조건을 체크합니다.
+    # V4.1: 적응형 트레일링 스탑 — 하락장에서는 더 빡빡하게, 수익 중이면 이익 잠금
     # ===================================================================
     for symbol in list(positions.keys()):
         try:
@@ -89,20 +90,36 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
             highest_price = max(pos['highest_price'], current_price)
             positions[symbol]['highest_price'] = highest_price
             
-            # Trailing stop condition
-            drop_threshold = highest_price * (1.0 - config.trailing_stop_pct)
+            profit_pct_now = ((current_price - buy_price) / buy_price) * 100
+            
+            # === 적응형 트레일링 스탑 ===
+            # 기본: 고점 대비 config.trailing_stop_pct (3%) 하락 시 매도
+            trailing_pct = config.trailing_stop_pct
+            
+            # [이익 잠금] +3% 이상 수익 중이면 트레일링을 1.5%로 타이트하게 조여서 이익을 지킴
+            if profit_pct_now >= 3.0:
+                trailing_pct = 0.015  # 1.5%
+            # [초과 수익 보호] +6% 이상이면 더 강하게 1%로 조임
+            if profit_pct_now >= 6.0:
+                trailing_pct = 0.01   # 1%
+            
+            drop_threshold = highest_price * (1.0 - trailing_pct)
             
             # [Tier 2 Macro Filter]: If Panic mode, sell immediately
             if market_filter.news_panic_flag:
                 logger.critical(f"🚨 [{symbol}] PANIC SELL TRIGGERED BY GLOBAL NEWS! Liquidating position.")
                 drop_threshold = current_price + 99999999
 
-            # Hard Stop Loss at -3% from entry
-            hard_stop = buy_price * 0.97
+            # === 적응형 하드 스탑 ===
+            # 기본: 진입가 대비 -3%
+            # 하락장(F&G ≤ 40): -2%로 더 빡빡하게
+            hard_stop_pct = 0.02 if fg_score <= 40 else 0.03
+            hard_stop = buy_price * (1.0 - hard_stop_pct)
             
             if current_price <= drop_threshold or current_price <= hard_stop:
                 profit_pct = ((current_price - buy_price) / buy_price) * 100
-                logger.info(f"[{symbol}] STOP Triggered! Selling at {current_price:,} KRW (Buy: {buy_price:,}). PNL: {profit_pct:.2f}%")
+                stop_type = "TRAILING" if current_price <= drop_threshold else "HARD"
+                logger.info(f"[{symbol}] {stop_type} STOP Triggered! Selling at {current_price:,} KRW (Buy: {buy_price:,}). PNL: {profit_pct:.2f}%")
                 
                 base_ticker = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[1]
                 amount_to_sell = exchange_api.fetch_balance(base_ticker) if not config.dry_run else pos.get('amount', 0)
@@ -113,7 +130,7 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
                     del positions[symbol]
                     cooldowns[symbol] = time.time()
                     logger.info(f"[{symbol}] Position cleared & Added to 3-hour cooldown.")
-                    save_open_positions(positions) # 영구 저장
+                    save_open_positions(positions)
                 else:
                     logger.warning(f"[{symbol}] Sell order failed or partially filled. Keeping in memory to retry on next tick.")
             
@@ -138,38 +155,38 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
             logger.error(f"Error managing position for {symbol}: {e}")
 
     # ===================================================================
-    # PHASE B: 하락장 방어 모드 (Fear & Greed 3단계 필터)
-    # 극단적 공포장에서는 신규 매수를 100% 차단하여 현금 보유.
+    # PHASE B: 하락장 방어 모드 (F&G 퍼센티지 기반 유동 스케일링)
+    # F&G 점수를 0~100 비율로 변환하여 슬롯 수와 예산을 유동적으로 조절.
     # ===================================================================
-    fg_score = market_filter.fear_greed_score
-    
-    if fg_score <= 20:
-        logger.info(f"🔴 [Cash Mode] Fear & Greed = {fg_score}. Extreme Fear detected. ALL new buys BLOCKED. Preserving cash.")
+    if fg_score <= 15:
+        # 극단적 공포: 매수 완전 차단
+        logger.info(f"🔴 [Cash Mode] Fear & Greed = {fg_score}. Extreme Fear detected. ALL new buys BLOCKED.")
         logger.info("--- Scan Cycle Complete ---")
         return
     
-    # 방어 모드: 슬롯 수와 예산 제한 축소
+    # F&G 비율 기반 유동 스케일링
+    # fg_ratio: 0.15 ~ 1.0 (F&G 15~100을 0~1 범위로 정규화)
+    fg_ratio = min(fg_score / 100.0, 1.0)
+    
+    # 슬롯 수: max_positions의 fg_ratio% (최소 1, 최대 max_positions)
+    effective_max_positions = max(1, int(config.max_positions * fg_ratio))
+    # 슬롯당 예산 캡: 기본 30만원에 fg_ratio를 곱함
+    max_alloc_cap = max(10000, int(300000 * fg_ratio))
+    
     if fg_score <= 40:
-        effective_max_positions = min(config.max_positions, 3)
-        max_alloc_cap = 30000
-        logger.info(f"🟡 [Defensive Mode] Fear & Greed = {fg_score}. Max positions reduced to {effective_max_positions}, cap per coin: {max_alloc_cap:,} KRW.")
+        logger.info(f"🟡 [Defensive] F&G={fg_score} → {int(fg_ratio*100)}% capacity: {effective_max_positions} slots, cap {max_alloc_cap:,} KRW/coin")
     else:
-        effective_max_positions = config.max_positions
-        max_alloc_cap = 300000
+        logger.info(f"🟢 [Normal] F&G={fg_score} → {effective_max_positions} slots, cap {max_alloc_cap:,} KRW/coin")
 
     # ===================================================================
     # PHASE C: 돌파 후보 수집 (매수 즉시 실행 X, 리스트에 모으기)
-    # 모든 코인을 스캔한 후 거래량 순위가 높은 순서대로 매수.
     # ===================================================================
-    breakout_candidates = []  # (rank_index, symbol, current_price, target_price) 튜플 리스트
+    breakout_candidates = []
     
     for idx, symbol in enumerate(top_coins):
         try:
-            # 이미 보유 중이면 스킵
             if symbol in positions:
                 continue
-            
-            # 뉴스 패닉이면 신규 매수 스킵
             if market_filter.news_panic_flag:
                 continue
             
@@ -193,14 +210,18 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
             target_price = strategy.get_breakout_target(df_15m)
             
             if target_price and current_price >= target_price:
-                # BTC Dumping 체크
                 if market_filter.check_btc_trend() == "DUMPING":
                     logger.warning(f"[{symbol}] Buy cancelled due to BTC 4H Dumping Trend.")
                     continue
                 
-                # 후보 리스트에 추가 (rank = index in volume-sorted list, lower = better)
-                breakout_candidates.append((idx, symbol, current_price, target_price))
-                logger.info(f"[{symbol}] Breakout Candidate! Price {current_price:,} >= Target {target_price:,} (Volume Rank: #{idx+1})")
+                # RSI 과열 필터: RSI ≥ 75면 이미 과매수 → 고점 추격 방지
+                rsi = strategy.get_rsi(symbol)
+                if rsi >= 75:
+                    logger.info(f"[{symbol}] Skipped: RSI={rsi:.1f} (Overbought). Avoiding top-chasing.")
+                    continue
+                
+                breakout_candidates.append((idx, symbol, current_price, target_price, rsi))
+                logger.info(f"[{symbol}] Breakout Candidate! Price {current_price:,} >= Target {target_price:,} (Rank #{idx+1}, RSI={rsi:.1f})")
         
         except Exception as e:
             logger.error(f"Error scanning symbol {symbol}: {e}")
@@ -212,13 +233,11 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
         logger.info("--- Scan Cycle Complete (No breakout candidates) ---")
         return
     
-    # 거래량 순위가 높은(= rank_index가 낮은) 순서로 정렬
     breakout_candidates.sort(key=lambda x: x[0])
     logger.info(f"📊 {len(breakout_candidates)} breakout candidates found. Processing by volume rank priority...")
     
-    for rank_index, symbol, current_price, target_price in breakout_candidates:
+    for rank_index, symbol, current_price, target_price, rsi in breakout_candidates:
         try:
-            # 슬롯 체크
             remaining_slots = effective_max_positions - len(positions)
             if remaining_slots <= 0:
                 logger.info(f"[{symbol}] Maximum coin count ({effective_max_positions}) reached. Stopping buy loop.")
@@ -230,9 +249,9 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
                 logger.info(f"[{symbol}] Skipped: Insufficient KRW ({krw_avail:,.0f}). Cannot proceed.")
                 break
             
-            allocate_amount = int((krw_avail / remaining_slots) * 0.99)  # 1% 수수료 안전마진
+            allocate_amount = int((krw_avail / remaining_slots) * 0.99)
             
-            # 방어모드/정상모드 캡 적용
+            # 방어모드 캡 적용 (F&G 퍼센티지 스케일링)
             if allocate_amount > max_alloc_cap:
                 allocate_amount = max_alloc_cap
                 logger.info(f"[{symbol}] Allocation capped at {max_alloc_cap:,} KRW (F&G: {fg_score}).")
@@ -247,7 +266,6 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
                     continue
             
             # AI 필터링
-            rsi = strategy.get_rsi(symbol)
             approved, context = ai_advisor.analyze_breakout(symbol, current_price, target_price, config.vbd_k, rank_index + 1, rsi)
             
             if approved:
@@ -265,7 +283,7 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
                         'buy_time': time.time()
                     }
                     logger.info(f"[{symbol}] Position Opened successfully.")
-                    save_open_positions(positions) # 영구 저장
+                    save_open_positions(positions)
             else:
                 logger.info(f"[{symbol}] AI VETOED Trade (Rank #{rank_index+1}): {context[-50:]}")
 
