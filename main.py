@@ -203,7 +203,16 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
     
     # 목표 투자액 (총 자산 * 사용 허용 비율)
     target_investment_limit = total_portfolio * cash_usage_ratio
-    max_alloc_cap = int(target_investment_limit / effective_max_positions) if effective_max_positions > 0 else 0
+    
+    # 현재 이미 투자된 금액
+    current_invested_krw = total_coin_value
+    
+    # 이번 사이클에서 추가로 '더' 매수할 수 있는 총 한도
+    total_usable_krw = max(0, target_investment_limit - current_invested_krw)
+    
+    # 빈 슬롯당 할당 캡 (최대치 보정)
+    remaining_slots_for_cap = effective_max_positions - len(positions)
+    max_alloc_cap = int(total_usable_krw / remaining_slots_for_cap) if remaining_slots_for_cap > 0 else 0
 
     if cash_usage_ratio < 1.0:
         logger.info(f"🟡 [Defensive] F&G={fg_score} → {effective_max_positions} slots, cap {max_alloc_cap:,} KRW, cash usage {int(cash_usage_ratio*100)}% (reserve {int((1-cash_usage_ratio)*100)}%)")
@@ -292,8 +301,14 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
                 logger.info(f"[{symbol}] Skipped: Insufficient KRW ({krw_avail:,.0f}). Cannot proceed.")
                 break
             
-            # 포트폴리오 기반으로 사전 계산된 고정 할당량 사용
+            # 남은 방어모드 예산 한도 내에서 균등 분할
             allocate_amount = min(max_alloc_cap, int(krw_avail * 0.99))
+            
+            # 한 턴에 예산을 썼으므로, 다음 코인을 위해 남은 한도와 캡을 실시간으로 차감/재계산 처리
+            total_usable_krw -= allocate_amount
+            remaining_slots -= 1
+            if remaining_slots > 0:
+                max_alloc_cap = int(total_usable_krw / remaining_slots)
             
             # 최소 주문 금액 보정
             if allocate_amount < 5500:
