@@ -159,9 +159,13 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
     # F&G 점수를 0~100 비율로 변환하여 슬롯 수와 예산을 유동적으로 조절.
     # ===================================================================
     if fg_score <= 15:
-        # 극단적 공포: 매수 완전 차단
         logger.info(f"🔴 [Cash Mode] Fear & Greed = {fg_score}. Extreme Fear detected. ALL new buys BLOCKED.")
-        logger.info("--- Scan Cycle Complete ---")
+        krw_now = get_current_real_balance(exchange_api, "KRW") or 0
+        status_text = f"[bold cyan]Fear & Greed:[/bold cyan] [red]{fg_score} (🔴 CASH MODE)[/red]\n"
+        status_text += f"[bold cyan]Slots:[/bold cyan] [white]{len(positions)}[/white] / [white]0 (blocked)[/white]\n"
+        status_text += f"[bold cyan]KRW Balance:[/bold cyan] [green]{krw_now:,.0f}[/green] 원\n"
+        status_text += "[red bold]⛔ All new buys are BLOCKED until F&G recovers above 15.[/red bold]"
+        console.print(Panel(status_text, title="[bold magenta]📊 Scan Cycle Complete[/bold magenta]", expand=False))
         return
     
     # F&G 비율 기반 유동 스케일링
@@ -230,7 +234,18 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
     # PHASE D: 우선순위 매수 실행 (거래량 상위 코인부터 균등 배분)
     # ===================================================================
     if not breakout_candidates:
-        logger.info("--- Scan Cycle Complete (No breakout candidates) ---")
+        # No candidates도 대시보드 표시
+        from rich.table import Table
+        krw_now = get_current_real_balance(exchange_api, "KRW") or 0
+        if fg_score <= 40:
+            fg_color, fg_mode = "yellow", "🟡 DEFENSIVE"
+        else:
+            fg_color, fg_mode = "green", "🟢 NORMAL"
+        status_text = f"[bold cyan]Fear & Greed:[/bold cyan] [{fg_color}]{fg_score} ({fg_mode})[/{fg_color}]\n"
+        status_text += f"[bold cyan]Slots:[/bold cyan] [white]{len(positions)}[/white] / [white]{effective_max_positions}[/white]  |  [bold cyan]Cap/Coin:[/bold cyan] [white]{max_alloc_cap:,}[/white] KRW\n"
+        status_text += f"[bold cyan]KRW Balance:[/bold cyan] [green]{krw_now:,.0f}[/green] 원\n"
+        status_text += "[dim]No breakout candidates this cycle.[/dim]"
+        console.print(Panel(status_text, title="[bold magenta]📊 Scan Cycle Complete[/bold magenta]", expand=False))
         return
     
     breakout_candidates.sort(key=lambda x: x[0])
@@ -290,7 +305,59 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
         except Exception as e:
             logger.error(f"Error processing buy for {symbol}: {e}")
 
-    logger.info("--- Scan Cycle Complete ---")
+    # ===================================================================
+    # STATUS DASHBOARD: 매 스캔 사이클 종료 시 현재 상태 요약 출력
+    # ===================================================================
+    from rich.table import Table
+    
+    # F&G 모드 색상 결정
+    if fg_score <= 15:
+        fg_color = "red"
+        fg_mode = "🔴 CASH MODE"
+    elif fg_score <= 40:
+        fg_color = "yellow"
+        fg_mode = "🟡 DEFENSIVE"
+    else:
+        fg_color = "green"
+        fg_mode = "🟢 NORMAL"
+    
+    krw_now = get_current_real_balance(exchange_api, "KRW") or 0
+    used_slots = len(positions)
+    
+    # 포지션 테이블 생성
+    status_lines = []
+    status_lines.append(f"[bold cyan]Fear & Greed:[/bold cyan] [{fg_color}]{fg_score} ({fg_mode})[/{fg_color}]")
+    status_lines.append(f"[bold cyan]Slots:[/bold cyan] [white]{used_slots}[/white] / [white]{effective_max_positions}[/white]  |  [bold cyan]Cap/Coin:[/bold cyan] [white]{max_alloc_cap:,}[/white] KRW")
+    status_lines.append(f"[bold cyan]KRW Balance:[/bold cyan] [green]{krw_now:,.0f}[/green] 원")
+    
+    if positions:
+        pos_table = Table(show_header=True, header_style="bold magenta", expand=False, padding=(0, 1))
+        pos_table.add_column("Coin", style="cyan", width=12)
+        pos_table.add_column("Buy Price", justify="right", style="white", width=14)
+        pos_table.add_column("Current", justify="right", style="white", width=14)
+        pos_table.add_column("PNL", justify="right", width=10)
+        pos_table.add_column("Held", justify="right", style="dim", width=8)
+        
+        for sym, pos in positions.items():
+            cur = exchange_api.fetch_current_price(sym) or pos['buy_price']
+            pnl = ((cur - pos['buy_price']) / pos['buy_price']) * 100
+            pnl_color = "green" if pnl >= 0 else "red"
+            held_hrs = (time.time() - pos.get('buy_time', time.time())) / 3600
+            pos_table.add_row(
+                sym.split('/')[0],
+                f"{pos['buy_price']:,.0f}",
+                f"{cur:,.0f}",
+                f"[{pnl_color}]{pnl:+.2f}%[/{pnl_color}]",
+                f"{held_hrs:.1f}h"
+            )
+        
+        status_text = "\n".join(status_lines)
+        console.print(Panel(status_text, title="[bold magenta]📊 Scan Cycle Complete[/bold magenta]", expand=False))
+        console.print(pos_table)
+    else:
+        status_lines.append("[dim]No open positions.[/dim]")
+        status_text = "\n".join(status_lines)
+        console.print(Panel(status_text, title="[bold magenta]📊 Scan Cycle Complete[/bold magenta]", expand=False))
 
 def main():
     welcome_msg = f"[bold cyan]AI Fusion Trading Bot + Auto Optimizer (KST)[/bold cyan]\n" \
