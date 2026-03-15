@@ -61,7 +61,7 @@ class MarketFilter:
                 headlines.append(f"- {entry.title}")
                 
             news_text = "\n".join(headlines)
-            logger.info(f"Top Headlines Extracted:\n{news_text}")
+            logger.info(f"Extracted {len(headlines)} global headlines. Sending to Gemini for panic detection...")
             
             if not self.ai.client:
                 logger.warning("Gemini API not configured. Skipping news analysis.")
