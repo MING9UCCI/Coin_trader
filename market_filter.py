@@ -14,17 +14,34 @@ class MarketFilter:
         self.last_news_check = 0
 
     def update_fear_and_greed(self):
-        """Tier 1 (Daily): Fetch Fear & Greed Index from Alternative.me"""
+        """Tier 1 (Daily): Fetch Fear & Greed Index from CoinMarketCap (Fallback: Alternative.me)"""
+        import re
+        logger.info("Fetching daily Fear & Greed Index...")
+        
+        # 1. Primary: CoinMarketCap Scrape
         try:
-            logger.info("Fetching daily Fear & Greed Index...")
+            url = "https://coinmarketcap.com/charts/fear-and-greed-index/"
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+            res = requests.get(url, headers=headers, timeout=10)
+            if res.status_code == 200:
+                match = re.search(r'"score":(\d+)', res.text)
+                if match:
+                    self.fear_greed_score = int(match.group(1))
+                    logger.info(f"[Macro Filter] Fear & Greed Index updated via CMC: {self.fear_greed_score}")
+                    return
+        except Exception as e:
+            logger.warning(f"Failed to scrape CMC Fear & Greed: {e}. Falling back to Alternative.me...")
+
+        # 2. Fallback: Alternative.me
+        try:
             response = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10)
             data = response.json()
             if 'data' in data and len(data['data']) > 0:
                 self.fear_greed_score = int(data['data'][0]['value'])
                 classification = data['data'][0]['value_classification']
-                logger.info(f"[Macro Filter] Fear & Greed Index updated: {self.fear_greed_score} ({classification})")
+                logger.info(f"[Macro Filter] Fear & Greed Index updated via Alt.me: {self.fear_greed_score} ({classification})")
             else:
-                logger.warning("Failed to parse Fear & Greed data.")
+                logger.warning("Failed to parse Fear & Greed data from Alternative.me.")
         except Exception as e:
             logger.error(f"Error fetching Fear & Greed Index: {e}")
 
