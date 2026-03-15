@@ -168,9 +168,9 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
         console.print(Panel(status_text, title="[bold magenta]📊 Scan Cycle Complete[/bold magenta]", expand=False))
         return
     
-    # F&G 비율 기반 유동 스케일링
-    # fg_ratio: 0.15 ~ 1.0 (F&G 15~100을 0~1 범위로 정규화)
-    fg_ratio = min(fg_score / 100.0, 1.0)
+    # F&G 비율 기반 유동 스케일링 (최소 50% 보장 — 공격적 세팅)
+    # fg_ratio: 최소 0.5 ~ 최대 1.0 (공포장에서도 절반 이상의 화력 유지)
+    fg_ratio = max(0.5, min(fg_score / 100.0, 1.0))
     
     # 슬롯 수: max_positions의 fg_ratio% (최소 1, 최대 max_positions)
     effective_max_positions = max(1, int(config.max_positions * fg_ratio))
