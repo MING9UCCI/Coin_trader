@@ -48,7 +48,8 @@ Given that this coin is in the upper bounds of volume, momentum is building, AND
 Instructions:
 1. Briefly analyze the provided metrics.
 2. If the Trade History shows repeated consecutive losses (e.g., multiple negative PNLs today), YOU MUST VETO THE TRADE to prevent bleeding money on a deceptive trending coin.
-3. In the very last line of your response, output exactly "DECISION: BUY" or "DECISION: WAIT". 
+3. [PUMP & DUMP AWARENESS]: If the coin has skyrocketed in a very short time (e.g., 15m RSI is extremely high, abnormal volume spike with long upper wicks), it may be a Pump & Dump. If you suspect it's a trap, YOU MUST VETO THE TRADE.
+4. In the very last line of your response, output exactly "DECISION: BUY" or "DECISION: WAIT". 
         """
         
         try:

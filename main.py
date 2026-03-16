@@ -19,73 +19,86 @@ console = Console()
 positions = {}
 cooldowns = {} # Tracks sell timestamps to prevent immediate re-entry
 
+# Top coins cache (refreshed every TOP_COINS_REFRESH_MIN minutes)
+_cached_top_coins = []
+_top_coins_last_update = 0
+
 def get_current_real_balance(exchange_api, ticker="KRW"):
     return exchange_api.fetch_balance(ticker)
 
-def sync_positions(exchange_api, strategy):
-    """Syncs existing portfolio balances into bot memory.
-    V4: First loads saved positions (with real entry prices). 
-    Then detects any NEW coins on the exchange not in saved data."""
+def sync_positions_with_exchange(exchange_api):
+    """V5: Syncs positions dict with ACTUAL exchange balances every cycle.
+    Detects ALL KRW-market coins on the exchange, not just top_coins.
+    Removes positions that no longer exist on the exchange."""
     global positions
     
-    # 1단계: 영구 저장된 포지션 로드
-    saved = load_open_positions()
-    if saved:
-        positions.update(saved)
-    
-    # 2단계: 거래소 실제 잔고와 크로스체크 (수동 매도 감지 및 미추적 코인 등록)
-    logger.info("Syncing positions with actual exchange balances...")
     try:
         balances = exchange_api.exchange.fetch_balance()
+        free_balances = balances.get('free', {})
+        total_balances = balances.get('total', {})
         
-        # A. 저장된 포지션 중 수동으로 팔아서 없어진 코인 제거
+        # A. 저장된 포지션 중 실제 잔고 없는 코인 제거
         for sym in list(positions.keys()):
             base_ticker = sym.split('/')[0] if '/' in sym else sym.split('-')[1]
-            free_amount = float(balances.get('free', {}).get(base_ticker, 0.0))
-            if free_amount <= 0:
-                free_amount = float(balances.get('total', {}).get(base_ticker, 0.0))
-                
+            actual_amount = float(free_balances.get(base_ticker, 0.0))
+            if actual_amount <= 0:
+                actual_amount = float(total_balances.get(base_ticker, 0.0))
+            
             current_price = exchange_api.fetch_current_price(sym)
-            if not current_price or (free_amount * current_price) < 5000:
-                logger.info(f"  [Sync] Removed [{sym}] from tracking (Manually sold or dust).")
+            if not current_price or (actual_amount * current_price) < 5000:
+                logger.info(f"  [Sync] Removed [{sym}] (sold or dust).")
                 del positions[sym]
             else:
-                logger.info(f"  [Sync] Restored [{sym}] (Buy Price: {positions[sym]['buy_price']:,})")
+                positions[sym]['amount'] = actual_amount
         
-        # B. 거래소에는 있는데 추적 리스트에 없는 신규 코인 추가
-        top_coins = strategy.get_top_volume_coins(limit=config.coin_count)
-        for symbol in top_coins:
+        # B. 거래소에 있지만 추적 안 되는 코인 감지 (전체 스캔)
+        skip_currencies = {'KRW', 'USDT', 'USDC', 'FDUSD'}
+        for currency, amount in total_balances.items():
+            if currency in skip_currencies:
+                continue
+            amount = float(amount)
+            if amount <= 0:
+                continue
+            
+            symbol = f"{currency}/KRW"
             if symbol in positions:
                 continue
             
-            base_ticker = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[1]
-            free_amount = float(balances.get('free', {}).get(base_ticker, 0.0))
-            if free_amount <= 0:
-                free_amount = float(balances.get('total', {}).get(base_ticker, 0.0))
-                
-            if free_amount > 0:
-                current_price = exchange_api.fetch_current_price(symbol)
-                if current_price and (free_amount * current_price) > 5000:
-                    positions[symbol] = {
-                        'buy_price': current_price,
-                        'highest_price': current_price,
-                        'amount': free_amount,
-                        'buy_time': time.time()
-                    }
-                    logger.warning(f"  [Sync] Detected untracked position: [{symbol}], Using current price.")
-
+            current_price = exchange_api.fetch_current_price(symbol)
+            if current_price and (amount * current_price) > 5000:
+                positions[symbol] = {
+                    'buy_price': current_price,
+                    'highest_price': current_price,
+                    'amount': amount,
+                    'buy_time': time.time()
+                }
+                logger.warning(f"  [Sync] Detected untracked coin: [{symbol}] ({amount} 개, ~{amount*current_price:,.0f} 원).")
         
-        # 최종 상태를 영구 저장
         save_open_positions(positions)
-
     except Exception as e:
-        logger.error(f"Failed to sync positions: {e}")
+        logger.error(f"Failed to sync positions with exchange: {e}")
+
+def get_cached_top_coins(strategy):
+    """Returns top volume coins with caching (default: refresh every 10 min)."""
+    global _cached_top_coins, _top_coins_last_update
+    
+    refresh_interval = int(getattr(config, 'top_coins_refresh_min', 10)) * 60
+    
+    if not _cached_top_coins or (time.time() - _top_coins_last_update) >= refresh_interval:
+        _cached_top_coins = strategy.get_top_volume_coins(limit=config.coin_count)
+        _top_coins_last_update = time.time()
+        logger.info(f"Top coins list refreshed ({len(_cached_top_coins)} coins). Next refresh in {refresh_interval//60} min.")
+    
+    return _cached_top_coins
 
 def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
     logger.info("--- Starting VBD + AI Scan Cycle ---")
     
-    # 1. Update Top Volume Coins (sorted by 24h volume descending)
-    top_coins = strategy.get_top_volume_coins(limit=config.coin_count)
+    # 0. 매 사이클마다 거래소 실잔고와 동기화
+    sync_positions_with_exchange(exchange_api)
+    
+    # 1. Top Volume Coins (캐싱, 기본 10분마다 갱신)
+    top_coins = get_cached_top_coins(strategy)
     fg_score = market_filter.fear_greed_score
     
     # ===================================================================
@@ -168,30 +181,44 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
             logger.error(f"Error managing position for {symbol}: {e}")
 
     # ===================================================================
-    # PHASE B: 하락장 방어 모드 (F&G 퍼센티지 기반 유동 스케일링)
-    # F&G 점수를 0~100 비율로 변환하여 슬롯 수와 예산을 유동적으로 조절.
+    # PHASE B: 4-Tier F&G 기반 자산 배분 시스템
+    # CASH (0~5): 매수 완전 차단
+    # DANGER (6~20): 25% 투자, 1슬롯 고정
+    # DEFENSIVE (21~40): 50% 투자, MAX_POSITIONS/2 슬롯
+    # NORMAL (41~100): 100% 투자, MAX_POSITIONS 슬롯
     # ===================================================================
     if fg_score <= 5:
+        fg_mode_name = "🔴 CASH MODE"
+        fg_color = "red"
+        cash_usage_ratio = 0.0
+        effective_max_positions = 0
+    elif fg_score <= 20:
+        fg_mode_name = "🟠 DANGER"
+        fg_color = "bright_red"
+        cash_usage_ratio = 0.25
+        effective_max_positions = 1
+    elif fg_score <= 40:
+        fg_mode_name = "🟡 DEFENSIVE"
+        fg_color = "yellow"
+        cash_usage_ratio = 0.5
+        effective_max_positions = max(1, config.max_positions // 2)
+    else:
+        fg_mode_name = "🟢 NORMAL"
+        fg_color = "green"
+        cash_usage_ratio = 1.0
+        effective_max_positions = config.max_positions
+    
+    if cash_usage_ratio == 0.0:
         logger.info(f"🔴 [Cash Mode] Fear & Greed = {fg_score}. ALL new buys BLOCKED.")
         krw_now = get_current_real_balance(exchange_api, "KRW") or 0
-        status_text = f"[bold cyan]Fear & Greed:[/bold cyan] [red]{fg_score} (🔴 CASH MODE)[/red]\n"
+        status_text = f"[bold cyan]Fear & Greed:[/bold cyan] [red]{fg_score} ({fg_mode_name})[/red]\n"
         status_text += f"[bold cyan]Slots:[/bold cyan] [white]{len(positions)}[/white] / [white]0 (blocked)[/white]\n"
         status_text += f"[bold cyan]KRW Balance:[/bold cyan] [green]{krw_now:,.0f}[/green] 원\n"
         status_text += "[red bold]⛔ All new buys are BLOCKED until F&G recovers above 5.[/red bold]"
         console.print(Panel(status_text, title="[bold magenta]📊 Scan Cycle Complete[/bold magenta]", expand=False))
         return
-    
-    # F&G 비율 기반 유동 스케일링 (최소 50% 보장)
-    fg_ratio = max(0.5, min(fg_score / 100.0, 1.0))
-    
-    # 슬롯 수: max_positions의 fg_ratio% (최소 1, 최대 max_positions)
-    effective_max_positions = max(1, int(config.max_positions * fg_ratio))
-    if fg_score <= 40:
-        cash_usage_ratio = 0.5
-    else:
-        cash_usage_ratio = 1.0
 
-    # === [포트폴리오 기반 정적 할당 계산] ===
+    # === [포트폴리오 기반 퍼센티지 할당 계산] ===
     krw_avail = get_current_real_balance(exchange_api, "KRW") or 0
     total_coin_value = 0
     if positions:
@@ -201,14 +228,13 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
             
     total_portfolio = krw_avail + total_coin_value
     
-    # 목표 투자액 (총 자산 * 사용 허용 비율)
+    # 투자 가능 총액 = 총 자산 × 투자 비율
     target_investment_limit = total_portfolio * cash_usage_ratio
+    # 코인 1종당 균등 배분 = 투자 가능 총액 / 슬롯 수
     max_alloc_cap = int(target_investment_limit / effective_max_positions) if effective_max_positions > 0 else 0
+    reserve_pct = int((1 - cash_usage_ratio) * 100)
 
-    if cash_usage_ratio < 1.0:
-        logger.info(f"🟡 [Defensive] F&G={fg_score} → {effective_max_positions} slots, cap {max_alloc_cap:,} KRW, cash usage {int(cash_usage_ratio*100)}% (reserve {int((1-cash_usage_ratio)*100)}%)")
-    else:
-        logger.info(f"🟢 [Normal] F&G={fg_score} → {effective_max_positions} slots, cap {max_alloc_cap:,} KRW, cash usage 100%")
+    logger.info(f"{fg_mode_name} F&G={fg_score} → {effective_max_positions} slots, cap {max_alloc_cap:,} KRW, invest {int(cash_usage_ratio*100)}% (reserve {reserve_pct}%)")
 
     # ===================================================================
     # PHASE C: 돌파 후보 수집 (매수 즉시 실행 X, 리스트에 모으기)
@@ -265,12 +291,8 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
         # No candidates도 대시보드 표시
         from rich.table import Table
         krw_now = get_current_real_balance(exchange_api, "KRW") or 0
-        if fg_score <= 40:
-            fg_color, fg_mode = "yellow", "🟡 DEFENSIVE"
-        else:
-            fg_color, fg_mode = "green", "🟢 NORMAL"
         reserve_pct = int((1 - cash_usage_ratio) * 100)
-        status_text = f"[bold cyan]Fear & Greed:[/bold cyan] [{fg_color}]{fg_score} ({fg_mode})[/{fg_color}]\n"
+        status_text = f"[bold cyan]Fear & Greed:[/bold cyan] [{fg_color}]{fg_score} ({fg_mode_name})[/{fg_color}]\n"
         status_text += f"[bold cyan]Slots:[/bold cyan] [white]{len(positions)}[/white] / [white]{effective_max_positions}[/white]  |  [bold cyan]Cap/Coin:[/bold cyan] [white]{max_alloc_cap:,}[/white] KRW\n"
         status_text += f"[bold cyan]KRW Balance:[/bold cyan] [green]{krw_now:,.0f}[/green] 원  |  [bold cyan]Reserve:[/bold cyan] [yellow]{reserve_pct}%[/yellow]\n"
         status_text += "[dim]No breakout candidates this cycle.[/dim]"
@@ -331,24 +353,12 @@ def scan_and_trade(exchange_api, ai_advisor, strategy, market_filter):
     # ===================================================================
     from rich.table import Table
     
-    # F&G 모드 색상 결정
-    if fg_score <= 5:
-        fg_color = "red"
-        fg_mode = "🔴 CASH MODE"
-    elif fg_score <= 40:
-        fg_color = "yellow"
-        fg_mode = "🟡 DEFENSIVE"
-    else:
-        fg_color = "green"
-        fg_mode = "🟢 NORMAL"
-    
     krw_now = get_current_real_balance(exchange_api, "KRW") or 0
     used_slots = len(positions)
-    reserve_pct = int((1 - cash_usage_ratio) * 100)
     
     # 포지션 테이블 생성
     status_lines = []
-    status_lines.append(f"[bold cyan]Fear & Greed:[/bold cyan] [{fg_color}]{fg_score} ({fg_mode})[/{fg_color}]")
+    status_lines.append(f"[bold cyan]Fear & Greed:[/bold cyan] [{fg_color}]{fg_score} ({fg_mode_name})[/{fg_color}]")
     status_lines.append(f"[bold cyan]Slots:[/bold cyan] [white]{used_slots}[/white] / [white]{effective_max_positions}[/white]  |  [bold cyan]Cap/Coin:[/bold cyan] [white]{max_alloc_cap:,}[/white] KRW")
     status_lines.append(f"[bold cyan]KRW Balance:[/bold cyan] [green]{krw_now:,.0f}[/green] 원  |  [bold cyan]Reserve:[/bold cyan] [yellow]{reserve_pct}%[/yellow]")
     
@@ -406,7 +416,7 @@ def main():
         market_filter.update_fear_and_greed() # Run once on boot
         market_filter.analyze_global_news()   # Run once on boot
 
-        sync_positions(exchange_api, strategy)
+        sync_positions_with_exchange(exchange_api)
 
         scan_and_trade(exchange_api, ai_advisor, strategy, market_filter)
         

@@ -28,6 +28,7 @@ class Config:
             
         # Max number of positions to hold concurrently
         self.max_positions = int(os.getenv("MAX_POSITIONS", "5"))
+        self.top_coins_refresh_min = int(os.getenv("TOP_COINS_REFRESH_MIN", "10"))
         
         # Blacklisted coins to completely ignore (e.g. "MYX/KRW,RIVER/KRW")
         blacklist_str = os.getenv("BLACKLIST_COINS", "MYX/KRW,XRP/KRW,RIVER/KRW")
